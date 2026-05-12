@@ -28,6 +28,7 @@ A single Python module, `knowledge_capture.py`, that acts as the sole gateway be
 - **TTL-based freshness checking** — each entity in Firebase has a `ttl_expires` timestamp. The module checks freshness before every API call and skips the call if data is still valid.
 - **Trend-based re-fetching** — a search counter per destination/POI tracks popularity. When a topic is searched 10 or more times within 7 days and its TTL has also expired, a re-fetch is triggered.
 - **Clean schema mapping** — raw SerpAPI responses are parsed and only required fields are retained. Noise such as ads, HTML snippets, and sponsored listings is discarded.
+- **Travel-date-aware fetching** — `capture()` accepts an optional `travel_date` parameter. When provided, SerpAPI is queried for that specific date rather than the default near-future window. Results are held in a conversation-scoped in-memory cache (`_conv_cache`) and never persisted to Firebase, keeping the persistent knowledge base clean of date-specific pricing snapshots. Requests beyond the booking horizon (hotels > 365 days, flights > 330 days) return `None` immediately without consuming quota.
 
 ---
 
@@ -57,7 +58,7 @@ A single Python module, `knowledge_capture.py`, that acts as the sole gateway be
 
 ### Module Structure
 
-`knowledge_capture.py` contains five internal functions with clear, single responsibilities:
+`knowledge_capture.py` contains the following functions with clear, single responsibilities:
 
 **1. `seed_database()`**
 - Runs once on initial deployment only.
@@ -81,19 +82,36 @@ A single Python module, `knowledge_capture.py`, that acts as the sole gateway be
 - Reads the `quota_tracker` Firebase collection to find the active API key.
 - Rotates to the next key (`key_1` → `key_2` → ... → `key_5`) when `used >= limit`.
 - If all 5 keys are exhausted, returns a `FALLBACK` signal — no API call is made, latest Firebase record is served instead.
-- Increments the `used` counter of the selected key after every successful API call.
+- Only keys with a real env var value (non-placeholder) have a quota record in Firestore; placeholder keys are excluded at initialisation time by `run_seed.py`.
 - Resets all counters on the 1st of each month.
 
-**5. `fetch_and_parse(query, entity_type)`**
-- Calls SerpAPI using the active key selected by `quota_tracker()`.
+**5. `_increment_quota(key_id)`**
+- Increments the `used` counter for the given key in Firebase by 1.
+- Called once per successful `fetch_and_parse()` call in both `seed_database()` and `capture()` — not per record stored.
+- Separated from `store_to_firebase()` to prevent quota over-counting when a single API call returns multiple records.
+
+**6. `fetch_and_parse(query, entity_type, api_key, iata, travel_date)`**
+- Calls SerpAPI via the official `serpapi.Client` SDK using the key selected by `quota_tracker()`.
+- When `travel_date` (ISO date string) is provided, uses it as the hotel `check_in_date` and flight `outbound_date` instead of the default near-future offsets (+1 day for hotels, +7 days for flights).
 - Maps raw response fields to the clean schema (see Schema section below).
 - Discards noise: ads, HTML snippets, sponsored listings, thumbnail URLs.
-- Returns a structured Python dictionary ready for Firebase storage.
+- On any exception (HTTP error, bad key, quota exceeded, unexpected response shape), prints the error with full type and message and returns `None` — errors are visible in logs rather than silently swallowed.
+- Returns a list of structured Python dicts ready for Firebase storage, or `None` if no usable results.
 
-**6. `store_to_firebase(record, collection)`**
+**7. `store_to_firebase(record, collection, entity_type, id_field)`**
 - Writes the structured record to the appropriate Firebase collection using the deterministic ID.
 - Sets `last_updated` to current timestamp.
 - Sets `ttl_expires` based on entity type TTL rules.
+- Does not touch the quota counter — that is the responsibility of `_increment_quota()`.
+
+**8. `capture(query, entity_type, city, travel_date)`**
+- Runtime entry point called by the AI engine at query time (not during seeding).
+- When `travel_date` is provided and exceeds the booking horizon (`hotels` > 365 days, `flights` > 330 days), returns `None` immediately without consuming quota.
+- Checks `_conv_cache` (in-memory, session-scoped) before any Firebase or API call. A cache hit returns the stored result directly.
+- When `travel_date` is `None`, runs `ttl_checker()` and returns Firebase records directly if TTL is `FRESH`.
+- When all quota is exhausted (FALLBACK): returns stale Firebase records if `travel_date` is `None`; returns `None` if `travel_date` is provided (stale Firebase data is for a different date and is not reliable).
+- When `travel_date` is provided and a fresh API result is obtained, stores results in `_conv_cache` only — not in Firebase — to avoid polluting the persistent knowledge base with date-specific snapshots.
+- For flights, resolves the IATA code from `_IATA_MAP` by exact state name match; accepts IATA codes directly as a fallback. Returns `None` if no mapping can be resolved.
 
 ### Entity ID Generation
 
@@ -109,9 +127,125 @@ All IDs are generated deterministically using MD5 hashing of `name + city` (lowe
 |---|---|
 | `hotels/` | name, location, price_per_night (min/max), rating, amenities, category, last_updated, ttl_expires, source |
 | `attractions/` | name, location, category, opening_hours, estimated_duration, popularity_score, last_updated, ttl_expires, source |
-| `flights/` | origin_state, destination, price_range, duration, last_updated, ttl_expires, source |
+| `flights/` | origin_state, origin_iata, destination, destination_iata, departure_time, arrival_time, duration_minutes, airline, flight_number, price, currency, location, last_updated, ttl_expires, source |
 | `trending_topics/` | search_count, last_reset, last_fetched |
 | `quota_tracker/` | key_id, used, limit, reset_date |
+
+### Collection Data Reference
+
+#### `hotels/`
+
+**Content:** One document per hotel property, keyed by a deterministic MD5 ID (`hotel_<10-char hash>` of name + city). Each document contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `hotel_id` | string | Deterministic ID — same property always maps to the same document |
+| `name` | string | Hotel property name as returned by Google Hotels via SerpAPI |
+| `location.city` | string | Selangor/KL city name used in the seed query (e.g., `"Shah Alam"`) |
+| `location.country` | string | Always `"Malaysia"` |
+| `location.lat` / `location.lng` | float or null | GPS coordinates from SerpAPI; null if not returned |
+| `price_per_night.min` | float | Lowest nightly rate in MYR (0 if unavailable) |
+| `price_per_night.max` | float | Highest nightly rate in MYR |
+| `price_per_night.currency` | string | Always `"MYR"` |
+| `rating` | float or null | Google overall rating (e.g., 4.3) |
+| `amenities` | list[string] | Amenity tags returned by SerpAPI (e.g., `["Pool", "Free WiFi"]`) |
+| `category` | string | `"budget"` (< MYR 150/night), `"mid-range"` (150–400), `"luxury"` (> 400) |
+| `last_updated` | ISO timestamp | When this record was last fetched from SerpAPI |
+| `ttl_expires` | ISO timestamp | When the record becomes stale (7 days after `last_updated`) |
+| `source` | string | Always `"serpapi_hotels"` |
+
+**Freshness:** 7-day TTL. Hotel pricing changes frequently; records older than 7 days are re-fetched on next query.
+
+**AI usage:** Category (`budget`/`mid-range`/`luxury`) is the primary filter for budget-matching. Rating is a tiebreaker ranking signal. Amenities are used to match user preferences (e.g., pool, parking). Price range with `data_freshness="stale"` is surfaced to the user as an estimate rather than a confirmed rate.
+
+---
+
+#### `attractions/`
+
+**Content:** One document per attraction or POI, keyed by `attraction_<10-char hash>` of name + city. Each document contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `attraction_id` | string | Deterministic ID |
+| `name` | string | Place name (e.g., `"Batu Caves"`) |
+| `location.city` | string | City name used in the seed query |
+| `location.country` | string | Always `"Malaysia"` |
+| `location.lat` / `location.lng` | float or null | GPS coordinates if returned by Google Maps |
+| `category` | string or null | Place type tag from Google Maps (e.g., `"Tourist attraction"`, `"Museum"`) |
+| `opening_hours` | string or null | Human-readable hours string if returned (e.g., `"Open until 6:00 PM"`) |
+| `estimated_duration` | null | Reserved for future enrichment; always null in current version |
+| `popularity_score` | float | Google Maps rating (0.0 if unavailable); used as a ranking signal |
+| `last_updated` | ISO timestamp | When this record was last fetched |
+| `ttl_expires` | ISO timestamp | Stale after 60 days |
+| `source` | string | Always `"serpapi_attractions"` |
+
+**Freshness:** 60-day TTL. Attraction metadata (opening hours, category) is largely static. Popularity scores are refreshed when a topic exceeds the trending threshold (≥ 10 searches in 7 days with a stale TTL).
+
+**AI usage:** `popularity_score` is the default ranking signal for itinerary ordering when no user preference data exists. `category` filters attractions by interest type (e.g., nature, shopping, cultural). `opening_hours` is used to flag scheduling conflicts in itinerary generation. `location.lat`/`lng` are passed to routing logic for proximity calculations.
+
+---
+
+#### `flights/`
+
+**Content:** One document per flight option per origin route, keyed by `flight_<10-char hash>` of flight number + IATA code. Each document contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `flight_id` | string | Deterministic ID |
+| `origin_state` | string | Malaysian state name (e.g., `"Johor Bahru"`) |
+| `origin_iata` | string | IATA airport code of the departure airport (e.g., `"JHB"`) |
+| `destination` | string | Always `"Selangor"` |
+| `destination_iata` | string | IATA code of the arrival airport (typically `"KUL"`) |
+| `departure_time` | string or null | Departure time as returned by Google Flights (e.g., `"7:30 AM"`) |
+| `arrival_time` | string or null | Arrival time as returned by Google Flights |
+| `duration_minutes` | int or null | Total flight duration in minutes |
+| `airline` | string | Airline name (e.g., `"AirAsia"`) |
+| `flight_number` | string | Flight code (e.g., `"AK 6121"`) |
+| `price` | float | One-way fare in MYR at the time of fetch |
+| `currency` | string | Always `"MYR"` |
+| `location.city` | string | Origin city name |
+| `last_updated` | ISO timestamp | When this record was last fetched |
+| `ttl_expires` | ISO timestamp | Stale after 7 days |
+| `source` | string | Always `"serpapi_flights"` |
+
+**Freshness:** 7-day TTL. Flight pricing is advisory — fares fluctuate and this is not a live booking feed. Records older than 7 days are re-fetched on next query.
+
+**AI usage:** `price` and `duration_minutes` are used to assess travel feasibility for users arriving from outside Selangor. The AI filters out routes whose price exceeds the user's stated travel budget or whose duration makes same-day arrival impractical. `data_freshness="stale"` triggers a caveat in the output (e.g., "estimated fare, may vary").
+
+---
+
+#### `trending_topics/`
+
+**Content:** One document per searched topic name (e.g., a city, POI name, or state). Each document contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `search_count` | int | Number of times this topic has been queried since `last_reset` |
+| `last_reset` | ISO timestamp | When the counter was last zeroed (set on first query or after a re-fetch trigger) |
+| `last_fetched` | ISO timestamp or null | When a re-fetch was last triggered for this topic; null if never re-fetched |
+
+**Freshness:** Counter resets after a re-fetch is triggered. There is no TTL expiry on these documents — they accumulate across the system lifetime.
+
+**AI usage:** Not consumed by the AI engine directly. Used internally by `trend_tracker()` to decide whether a query warrants a fresh API fetch. A topic that has been searched ≥ 10 times within 7 days with a stale TTL triggers a proactive re-fetch so the AI always receives up-to-date data on popular destinations.
+
+---
+
+#### `quota_tracker/`
+
+**Content:** One document per active SerpAPI key (only keys with a real env var value are initialised). Each document contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `key_id` | string | Logical key identifier (e.g., `"key_1"`) |
+| `used` | int | Number of API calls made with this key in the current billing cycle |
+| `limit` | int | Maximum calls allowed before rotation (currently 100) |
+| `reset_date` | string | Date on which `used` should be manually reset to 0 (aligned to SerpAPI billing cycle) |
+
+**Freshness:** `used` is incremented once per successful `fetch_and_parse()` call. There is no TTL — this is operational state, not cached knowledge.
+
+**AI usage:** Not consumed by the AI engine. Used exclusively by `quota_tracker()` to select the active API key and by `capture()` to decide whether a live fetch is possible or a stale fallback must be returned.
+
+---
 
 ### TTL Rules
 
@@ -156,13 +290,20 @@ Johor Bahru (Senai), Kota Kinabalu, Kuching, Penang, Langkawi, Kota Bharu, Kuala
 ### Capture Trigger Flow
 
 ```
-Trigger (user search / scheduled batch / trend signal)
-    → trend_tracker()     increments search counter; flags if threshold met
-    → ttl_checker()       returns FRESH / STALE / NOT_FOUND
-    → quota_tracker()     selects active API key or returns FALLBACK
-    → fetch_and_parse()   calls SerpAPI; maps to clean schema
-    → store_to_firebase() writes record; updates TTL and quota counter
-    → ai_engine.py        reads clean structured records for RAG and recommendations
+capture() — runtime entry point
+    → [if travel_date beyond horizon]  return None immediately (no quota consumed)
+    → [if _conv_cache hit]             return cached result (no Firebase or API call)
+    → trend_tracker()                  increments search counter; flags if threshold met
+    → [if no travel_date] ttl_checker() returns FRESH / STALE / NOT_FOUND
+    → [if FRESH]           query Firebase directly; store in _conv_cache; return data_freshness=fresh
+    → quota_tracker()      selects active API key or returns FALLBACK
+    → [if FALLBACK + no travel_date]   query Firebase; return data_freshness=stale
+    → [if FALLBACK + travel_date]      return None (stale Firebase data is for a different date)
+    → fetch_and_parse()    calls SerpAPI with travel_date if provided; maps to clean schema; logs errors
+    → _increment_quota()   increments used counter by 1 for the active key (once per API call)
+    → [if travel_date]     store in _conv_cache only; return data_freshness=fresh
+    → [if no travel_date]  store_to_firebase(); _write_ttl_sentinel(); store in _conv_cache; return data_freshness=fresh
+    → ai_engine.py         reads clean structured records for RAG and recommendations
 ```
 
 ---
@@ -183,7 +324,10 @@ Tests should verify **external behaviour only** — what goes into Firebase and 
 **`quota_tracker()`**
 - Given `key_1` with `used == limit` → returns `key_2` as active key
 - Given all 5 keys exhausted → returns `FALLBACK` signal
-- Given a successful API call → increments `used` counter by 1 in Firebase
+
+**`_increment_quota(key_id)`**
+- Given a valid `key_id` → increments `used` counter by 1 in Firebase
+- Called once per successful `fetch_and_parse()` call, not per record stored
 
 **`trend_tracker()`**
 - Given search count below 10 within 7 days → does not flag for re-fetch
@@ -198,6 +342,12 @@ Tests should verify **external behaviour only** — what goes into Firebase and 
 - Given a structured hotel record → writes to `hotels/` collection with correct deterministic ID
 - Given the same hotel fetched twice → second write overwrites first, no duplicate document created
 
+**`capture()` — travel_date behaviour**
+- Given `travel_date` beyond the horizon (e.g. 400 days out for hotels) → returns `None` without calling the API
+- Given `travel_date` within the horizon → SerpAPI is called with that date; result stored in `_conv_cache` only, not Firebase
+- Given same `query + travel_date` called twice in one session → second call returns `_conv_cache` hit; no API or Firebase call
+- Given `travel_date` provided and all quota exhausted → returns `None` (does not serve stale Firebase data)
+
 **`seed_database()`**
 - Given an empty Firebase instance → all seed cities, attractions, and flight origins produce records in Firebase after seeding completes
 
@@ -211,7 +361,7 @@ The following fields will be present on every Firebase record written by `knowle
 
 - `last_updated` — ISO timestamp of when the record was last fetched
 - `ttl_expires` — ISO timestamp of when the record should be considered stale
-- `source` — always `"serpapi_hotels"`, `"serpapi_places"`, or `"serpapi_flights"`
+- `source` — always `"serpapi_hotels"`, `"serpapi_attractions"`, or `"serpapi_flights"`
 - `data_freshness` — `"fresh"` or `"stale"` (set when serving a fallback record after all quota exhausted)
 
 Your `database.py` does not need to call SerpAPI directly. All writes go through `knowledge_capture.py`. Your responsibility is to expose clean read functions that `ai_engine.py` can call.
@@ -224,9 +374,10 @@ Key things to know:
 
 - **Hotels** are categorised as `budget`, `mid-range`, or `luxury` — use this field to filter by user budget preference.
 - **Attractions** have a `popularity_score` field — use this as a ranking signal for itinerary prioritisation when user trend data is sparse.
-- **Flights** contain `price_range` (min/max) and `duration` — use these to filter feasibility based on user budget and travel time constraints.
+- **Flights** contain `price` (one-way fare in MYR) and `duration_minutes` — use these to filter feasibility based on user budget and travel time constraints.
 - **Selangor + KL** is the fixed destination scope. All hotel and attraction records will be within this geographical boundary.
 - When `data_freshness` is `"stale"` on a record, flag this to the user in the recommendation output as an estimated rather than confirmed price.
+- Pass `travel_date` (ISO string, e.g. `"2026-12-25"`) to `capture()` when the user specifies a travel date. If `capture()` returns `None`, the date is either beyond the booking horizon or quota is exhausted — surface this to the user as "pricing unavailable for that date" rather than falling back silently.
 
 ### For the API Integration Specialist
 

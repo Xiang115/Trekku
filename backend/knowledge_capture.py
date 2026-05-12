@@ -1,6 +1,6 @@
 import hashlib
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import serpapi
 
@@ -33,6 +33,10 @@ TTL_DAYS = {
     "attractions": 60,
     "flights":     7
 }
+
+MAX_HORIZON_DAYS = {"hotels": 365, "flights": 330}
+
+_conv_cache: dict = {}
 
 
 def generate_id(entity_type: str, name: str, city: str) -> str:
@@ -83,15 +87,15 @@ def trend_tracker(topic_name: str, entity_id: str, collection: str) -> str:
     return "OK"
 
 
-def fetch_and_parse(query: str, entity_type: str, api_key: str, iata: str = None):
+def fetch_and_parse(query: str, entity_type: str, api_key: str, iata: str = None, travel_date: str = None):
     try:
         client = serpapi.Client(api_key=api_key)
         if entity_type == "hotels":
             params = {
                 "engine": "google_hotels",
                 "q": f"{query} hotels",
-                "check_in_date": (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d"),
-                "check_out_date": (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d"),
+                "check_in_date": travel_date if travel_date else (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d"),
+                "check_out_date": (date.fromisoformat(travel_date) + timedelta(days=1)).isoformat() if travel_date else (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d"),
                 "gl": "my",
             }
             data = client.search(params)
@@ -163,7 +167,7 @@ def fetch_and_parse(query: str, entity_type: str, api_key: str, iata: str = None
                 "engine": "google_flights",
                 "departure_id": iata,
                 "arrival_id": "KUL",
-                "outbound_date": (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"),
+                "outbound_date": travel_date if travel_date else (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%d"),
                 "type": "2",
                 "currency": "MYR",
                 "hl": "en",
@@ -318,8 +322,16 @@ _QUERY_FIELD = {
 }
 
 
-def capture(query: str, entity_type: str, city: str = None):
+def capture(query: str, entity_type: str, city: str = None, travel_date: str = None):
     collection = entity_type
+
+    if travel_date and entity_type in MAX_HORIZON_DAYS:
+        if (date.fromisoformat(travel_date) - date.today()).days > MAX_HORIZON_DAYS[entity_type]:
+            return None
+
+    cache_key = (entity_type, query, travel_date or "")
+    if cache_key in _conv_cache:
+        return _conv_cache[cache_key]
 
     if entity_type == "flights":
         entity_id = generate_id("flight", query, "selangor")
@@ -327,20 +339,24 @@ def capture(query: str, entity_type: str, city: str = None):
         entity_id = generate_id(_ENTITY_PREFIX[entity_type], query, city or query)
 
     trend_tracker(query, entity_id, collection)
-    freshness = ttl_checker(entity_id, collection)
 
     query_value = query if entity_type == "flights" else (city or query)
 
-    if freshness == "FRESH":
-        records = query_records(collection, _QUERY_FIELD[entity_type], "==", query_value)
-        records = [r for r in records if not r.get("_ttl_sentinel")]
-        for r in records:
-            r["data_freshness"] = "fresh"
-        return records
+    if not travel_date:
+        freshness = ttl_checker(entity_id, collection)
+        if freshness == "FRESH":
+            records = query_records(collection, _QUERY_FIELD[entity_type], "==", query_value)
+            records = [r for r in records if not r.get("_ttl_sentinel")]
+            for r in records:
+                r["data_freshness"] = "fresh"
+            _conv_cache[cache_key] = records
+            return records
 
     api_key, key_id = quota_tracker()
 
     if api_key == "FALLBACK":
+        if travel_date:
+            return None
         records = query_records(collection, _QUERY_FIELD[entity_type], "==", query_value)
         records = [r for r in records if not r.get("_ttl_sentinel")]
         if records:
@@ -352,16 +368,24 @@ def capture(query: str, entity_type: str, city: str = None):
     iata = _IATA_MAP.get(query) or (query if query in _IATA_MAP.values() else None)
     if entity_type == "flights" and iata is None:
         return None
-    results = fetch_and_parse(query, entity_type, api_key, iata=iata)
+
+    results = fetch_and_parse(query, entity_type, api_key, iata=iata, travel_date=travel_date)
     if not results:
         return None
 
     _increment_quota(key_id)
+
+    if travel_date:
+        for item in results:
+            item["data_freshness"] = "fresh"
+        _conv_cache[cache_key] = results
+        return results
+
     for item in results:
         store_to_firebase(item, collection, entity_type, _ID_FIELD[entity_type])
-
     _write_ttl_sentinel(collection, entity_id, entity_type)
 
     for item in results:
         item["data_freshness"] = "fresh"
+    _conv_cache[cache_key] = results
     return results
