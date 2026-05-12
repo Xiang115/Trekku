@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.env
+.env
+
+# # Firebase - never commit the service account key
+firebase/serviceAccountKey.json
+
+# Node / React
+node_modules/
+frontend/.env.local
+frontend/build/
+frontend/dist/
+
+# Misc
+.DS_Store
+*.log

@@ -1,0 +1,457 @@
+import os
+from datetime import datetime, timedelta
+from unittest.mock import patch, MagicMock
+
+from knowledge_capture import (
+    generate_id,
+    ttl_checker,
+    quota_tracker,
+    trend_tracker,
+    fetch_and_parse,
+    store_to_firebase,
+    seed_database,
+    capture,
+    TREKKU_SEED,
+    _write_ttl_sentinel,
+)
+
+
+# ── generate_id ───────────────────────────────────────────────────────────────
+
+def test_generate_id_is_deterministic():
+    assert generate_id("hotel", "Test Hotel", "KL") == generate_id("hotel", "Test Hotel", "KL")
+
+
+def test_generate_id_prefix_matches_entity_type():
+    assert generate_id("hotel", "Place", "KL").startswith("hotel_")
+    assert generate_id("attraction", "Place", "KL").startswith("attraction_")
+
+
+def test_generate_id_different_types_produce_different_ids():
+    assert generate_id("hotel", "Place", "KL") != generate_id("attraction", "Place", "KL")
+
+
+# ── ttl_checker ───────────────────────────────────────────────────────────────
+
+def test_ttl_checker_returns_fresh_for_future_expiry():
+    future = (datetime.utcnow() + timedelta(days=1)).isoformat()
+    with patch("knowledge_capture.get_record", return_value={"ttl_expires": future}):
+        assert ttl_checker("some_id", "hotels") == "FRESH"
+
+
+def test_ttl_checker_returns_stale_for_past_expiry():
+    past = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    with patch("knowledge_capture.get_record", return_value={"ttl_expires": past}):
+        assert ttl_checker("some_id", "hotels") == "STALE"
+
+
+def test_ttl_checker_returns_not_found_when_no_record():
+    with patch("knowledge_capture.get_record", return_value=None):
+        assert ttl_checker("missing_id", "hotels") == "NOT_FOUND"
+
+
+# ── quota_tracker ─────────────────────────────────────────────────────────────
+
+def test_quota_tracker_returns_key1_when_available():
+    with patch("knowledge_capture.get_record", return_value={"used": 0, "limit": 100}):
+        with patch.dict(os.environ, {"SERPAPI_KEY_1": "test_key_1"}):
+            api_key, key_id = quota_tracker()
+    assert api_key == "test_key_1"
+    assert key_id == "key_1"
+
+
+def test_quota_tracker_skips_exhausted_key1_and_returns_key2():
+    def get_record_side(collection, doc_id):
+        if doc_id == "key_1":
+            return {"used": 100, "limit": 100}
+        if doc_id == "key_2":
+            return {"used": 0, "limit": 100}
+        return {"used": 100, "limit": 100}
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch.dict(os.environ, {"SERPAPI_KEY_2": "test_key_2"}):
+            api_key, key_id = quota_tracker()
+    assert api_key == "test_key_2"
+    assert key_id == "key_2"
+
+
+def test_quota_tracker_returns_fallback_when_all_keys_exhausted():
+    with patch("knowledge_capture.get_record", return_value={"used": 100, "limit": 100}):
+        api_key, key_id = quota_tracker()
+    assert api_key == "FALLBACK"
+    assert key_id is None
+
+
+# ── trend_tracker ─────────────────────────────────────────────────────────────
+
+def test_trend_tracker_returns_ok_when_count_below_threshold():
+    recent = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    record = {"search_count": 5, "last_reset": recent, "last_fetched": None}
+    with patch("knowledge_capture.get_record", return_value=record):
+        with patch("knowledge_capture.update_record"):
+            assert trend_tracker("Petronas", "some_id", "attractions") == "OK"
+
+
+def test_trend_tracker_returns_refetch_when_count_high_and_ttl_stale():
+    recent = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    topic_record = {"search_count": 9, "last_reset": recent, "last_fetched": None}
+    entity_record = {"ttl_expires": past_ttl}
+
+    def get_record_side(collection, doc_id):
+        if collection == "trending_topics":
+            return topic_record
+        return entity_record
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.update_record"):
+            assert trend_tracker("Petronas", "some_id", "attractions") == "REFETCH"
+
+
+def test_trend_tracker_returns_ok_when_count_high_but_ttl_fresh():
+    recent = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    future_ttl = (datetime.utcnow() + timedelta(days=10)).isoformat()
+    topic_record = {"search_count": 9, "last_reset": recent, "last_fetched": None}
+    entity_record = {"ttl_expires": future_ttl}
+
+    def get_record_side(collection, doc_id):
+        if collection == "trending_topics":
+            return topic_record
+        return entity_record
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.update_record"):
+            assert trend_tracker("Petronas", "some_id", "attractions") == "OK"
+
+
+def test_trend_tracker_creates_new_document_when_topic_not_found():
+    with patch("knowledge_capture.get_record", return_value=None):
+        with patch("knowledge_capture.set_record") as mock_set:
+            result = trend_tracker("NewPlace", "some_id", "hotels")
+    assert result == "OK"
+    mock_set.assert_called_once()
+    call_data = mock_set.call_args[0][2]
+    assert call_data["search_count"] == 1
+    assert call_data["last_fetched"] is None
+
+
+# ── fetch_and_parse ───────────────────────────────────────────────────────────
+
+def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "properties": [
+            {
+                "name": "Grand Hotel",
+                "rate_per_night": {"extracted_lowest": 200, "extracted_highest": 350},
+                "gps_coordinates": {"latitude": 3.1, "longitude": 101.7},
+                "overall_rating": 4.5,
+                "amenities": ["WiFi"],
+            },
+            {
+                "name": "Budget Inn",
+                "rate_per_night": {"extracted_lowest": 80, "extracted_highest": 120},
+                "gps_coordinates": {},
+                "overall_rating": 3.8,
+                "amenities": [],
+            },
+        ]
+    }
+    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+        results = fetch_and_parse("Kuala Lumpur", "hotels", "fake_key")
+    assert isinstance(results, list)
+    assert len(results) == 2
+    assert set(results[0].keys()) == {"hotel_id", "name", "location", "price_per_night", "rating", "amenities", "category"}
+    assert results[0]["name"] == "Grand Hotel"
+    assert results[0]["category"] == "mid-range"
+    assert results[1]["category"] == "budget"
+
+
+def test_fetch_and_parse_excludes_sponsored_hotel():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "properties": [
+            {"name": "Ads Hotel", "sponsored": True},
+            {
+                "name": "Real Hotel",
+                "rate_per_night": {"extracted_lowest": 100, "extracted_highest": 150},
+                "gps_coordinates": {},
+                "overall_rating": 4.0,
+                "amenities": [],
+            }
+        ]
+    }
+    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+        results = fetch_and_parse("KL", "hotels", "fake_key")
+    assert results is not None
+    assert len(results) == 1
+    assert results[0]["name"] == "Real Hotel"
+
+
+def test_fetch_and_parse_returns_none_when_response_is_empty():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"properties": []}
+    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+        result = fetch_and_parse("KL", "hotels", "fake_key")
+    assert result is None
+
+
+def test_fetch_and_parse_returns_none_on_request_exception():
+    with patch("knowledge_capture.requests.get", side_effect=Exception("timeout")):
+        result = fetch_and_parse("KL", "hotels", "fake_key")
+    assert result is None
+
+
+def test_fetch_and_parse_flight_returns_per_flight_records():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "best_flights": [
+            {
+                "flights": [
+                    {
+                        "departure_airport": {"name": "Senai Int'l", "id": "JHB", "time": "2026-05-19 07:00"},
+                        "arrival_airport": {"name": "KLIA2", "id": "KUL", "time": "2026-05-19 08:05"},
+                        "airline": "AirAsia",
+                        "flight_number": "AK 111",
+                    }
+                ],
+                "total_duration": 65,
+                "price": 89,
+            },
+            {
+                "flights": [
+                    {
+                        "departure_airport": {"name": "Senai Int'l", "id": "JHB", "time": "2026-05-19 12:00"},
+                        "arrival_airport": {"name": "KLIA2", "id": "KUL", "time": "2026-05-19 13:10"},
+                        "airline": "MAS",
+                        "flight_number": "MH 222",
+                    }
+                ],
+                "total_duration": 70,
+                "price": 150,
+            },
+        ]
+    }
+    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+        results = fetch_and_parse("Johor Bahru", "flights", "fake_key", iata="JHB")
+
+    assert isinstance(results, list)
+    assert len(results) == 2
+    first = results[0]
+    assert first["departure_time"] == "2026-05-19 07:00"
+    assert first["arrival_time"] == "2026-05-19 08:05"
+    assert first["airline"] == "AirAsia"
+    assert first["flight_number"] == "AK 111"
+    assert first["duration_minutes"] == 65
+    assert first["price"] == 89
+    assert first["currency"] == "MYR"
+    assert first["origin_iata"] == "JHB"
+    assert first["destination_iata"] == "KUL"
+    assert "price_range" not in first
+
+
+# ── store_to_firebase ─────────────────────────────────────────────────────────
+
+def test_store_to_firebase_record_contains_last_updated():
+    record = {"hotel_id": "hotel_abc", "name": "Test"}
+    with patch("knowledge_capture.set_record"):
+        with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
+            with patch("knowledge_capture.update_record"):
+                store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+    assert "last_updated" in record
+
+
+def test_store_to_firebase_record_contains_ttl_expires():
+    record = {"hotel_id": "hotel_abc", "name": "Test"}
+    with patch("knowledge_capture.set_record"):
+        with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
+            with patch("knowledge_capture.update_record"):
+                store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+    assert "ttl_expires" in record
+
+
+def test_store_to_firebase_second_call_uses_set_record_not_create():
+    record = {"hotel_id": "hotel_abc", "name": "Test"}
+    with patch("knowledge_capture.set_record") as mock_set:
+        with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
+            with patch("knowledge_capture.update_record"):
+                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id", "key_1")
+    assert mock_set.call_count == 2
+
+
+def test_store_to_firebase_returns_false_on_write_failure():
+    record = {"hotel_id": "hotel_abc", "name": "Test"}
+    with patch("knowledge_capture.set_record", side_effect=Exception("Firebase error")):
+        result = store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+    assert result is False
+
+
+# ── seed_database ─────────────────────────────────────────────────────────────
+
+def test_seed_database_skips_already_seeded_collection():
+    with patch("knowledge_capture.get_record", return_value={"seeded": True, "ttl_expires": (datetime.utcnow() + timedelta(days=1)).isoformat()}):
+        with patch("knowledge_capture.fetch_and_parse") as mock_fetch:
+            seed_database()
+    mock_fetch.assert_not_called()
+
+
+def test_seed_database_stops_when_quota_returns_fallback():
+    def get_record_side(collection, doc_id):
+        if collection == "quota_tracker":
+            return {"used": 100, "limit": 100}
+        if doc_id == "_flags":
+            return None
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.fetch_and_parse") as mock_fetch:
+            with patch("knowledge_capture.set_record") as mock_set:
+                seed_database()
+
+    mock_fetch.assert_not_called()
+    flag_calls = [c for c in mock_set.call_args_list if c[0][1] == "_flags"]
+    assert len(flag_calls) == 0
+
+
+def test_seed_database_sets_seeded_flag_after_each_collection():
+    set_calls = []
+    fake_item = {"hotel_id": "h1", "attraction_id": "a1", "flight_id": "f1"}
+
+    def get_record_side(collection, doc_id):
+        if collection == "quota_tracker" and doc_id == "key_1":
+            return {"used": 0, "limit": 100}
+        if collection == "quota_tracker":
+            return {"used": 100, "limit": 100}
+        if doc_id == "_flags":
+            return None
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.set_record", side_effect=lambda c, d, data: set_calls.append((c, d, data))):
+            with patch("knowledge_capture.update_record"):
+                with patch("knowledge_capture.fetch_and_parse", return_value=[fake_item]):
+                    with patch.dict(os.environ, {"SERPAPI_KEY_1": "key"}):
+                        seed_database()
+
+    flag_calls = [(c, d, data) for c, d, data in set_calls if d == "_flags"]
+    assert len(flag_calls) == 3
+    for _, _, data in flag_calls:
+        assert data["seeded"] is True
+
+
+def test_seed_database_seeds_attractions_by_city():
+    fetched = []
+
+    def get_record_side(collection, doc_id):
+        if collection == "quota_tracker" and doc_id == "key_1":
+            return {"used": 0, "limit": 100}
+        if collection == "quota_tracker":
+            return {"used": 100, "limit": 100}
+        if doc_id == "_flags":
+            if collection in ("hotels", "flights"):
+                return {"seeded": True, "ttl_expires": (datetime.utcnow() + timedelta(days=1)).isoformat()}
+            return None
+        return None
+
+    def fetch_side(query, entity_type, api_key, iata=None):
+        if entity_type == "attractions":
+            fetched.append(query)
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.set_record"):
+            with patch("knowledge_capture.update_record"):
+                with patch("knowledge_capture.fetch_and_parse", side_effect=fetch_side):
+                    with patch.dict(os.environ, {"SERPAPI_KEY_1": "key"}):
+                        seed_database()
+
+    assert fetched == TREKKU_SEED["cities"]
+
+
+# ── capture ───────────────────────────────────────────────────────────────────
+
+def test_capture_returns_fresh_list_with_data_freshness_flag():
+    future_ttl = (datetime.utcnow() + timedelta(days=1)).isoformat()
+    sentinel = {"ttl_expires": future_ttl, "_ttl_sentinel": True}
+    hotel_records = [
+        {"hotel_id": "hotel_abc", "name": "Hotel A", "location": {"city": "KL"}},
+        {"hotel_id": "hotel_def", "name": "Hotel B", "location": {"city": "KL"}},
+    ]
+
+    def get_record_side(collection, doc_id):
+        if collection == "trending_topics":
+            return None
+        return sentinel
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.set_record"):
+            with patch("knowledge_capture.query_records", return_value=hotel_records + [sentinel]):
+                results = capture("KL", "hotels", city="KL")
+
+    assert isinstance(results, list)
+    assert len(results) == 2
+    assert all(r["data_freshness"] == "fresh" for r in results)
+
+
+def test_capture_returns_stale_list_when_quota_fallback():
+    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    sentinel = {"ttl_expires": past_ttl, "_ttl_sentinel": True}
+    stale_records = [{"hotel_id": "hotel_abc", "name": "Test Hotel", "location": {"city": "KL"}}]
+
+    def get_record_side(collection, doc_id):
+        if collection == "trending_topics":
+            return None
+        if collection == "quota_tracker":
+            return {"used": 100, "limit": 100}
+        return sentinel
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.set_record"):
+            with patch("knowledge_capture.query_records", return_value=stale_records):
+                results = capture("KL", "hotels", city="KL")
+
+    assert results is not None
+    assert all(r["data_freshness"] == "stale" for r in results)
+
+
+def test_capture_returns_none_when_fallback_and_no_firebase_record():
+    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    sentinel = {"ttl_expires": past_ttl, "_ttl_sentinel": True}
+
+    def get_record_side(collection, doc_id):
+        if collection == "trending_topics":
+            return None
+        if collection == "quota_tracker":
+            return {"used": 100, "limit": 100}
+        return sentinel
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.set_record"):
+            with patch("knowledge_capture.query_records", return_value=[]):
+                result = capture("Unknown", "hotels", city="Unknown")
+
+    assert result is None
+
+
+def test_capture_calls_fetch_and_parse_when_ttl_is_stale():
+    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    sentinel = {"ttl_expires": past_ttl, "_ttl_sentinel": True}
+
+    def get_record_side(collection, doc_id):
+        if collection == "trending_topics":
+            return None
+        if collection == "quota_tracker" and doc_id == "key_1":
+            return {"used": 0, "limit": 100}
+        if collection == "quota_tracker":
+            return {"used": 100, "limit": 100}
+        return sentinel
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side):
+        with patch("knowledge_capture.set_record"):
+            with patch("knowledge_capture.update_record"):
+                with patch("knowledge_capture.fetch_and_parse", return_value=None) as mock_fetch:
+                    with patch.dict(os.environ, {"SERPAPI_KEY_1": "test_key"}):
+                        capture("KL", "hotels", city="KL")
+
+    mock_fetch.assert_called_once()

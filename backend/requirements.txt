@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+firebase-admin
+requests
+python-dotenv
+pydantic
+groq
+huggingface_hub
+pytest
+httpx

@@ -1,0 +1,392 @@
+# Trekku — Monorepo Structure & Pre-Setup Guide
+**Project:** WIE 3005 Knowledge Management and Engineering
+**Stack:** FastAPI · Firebase · React · Groq · Hugging Face · SerpAPI
+
+---
+
+## 1. Monorepo Structure
+
+```
+trekku-workspace/
+│
+├── .github/
+│   └── workflows/
+│       └── deploy.yml                  # CI/CD (optional for prototype)
+│
+├── backend/                            # Deploys to Render
+│   ├── .env                            # All secret keys (never commit)
+│   ├── .env.example                    # Template for teammates
+│   ├── requirements.txt                # Python dependencies
+│   │
+│   ├── config.py                       # Loads .env, Firebase init
+│   ├── models.py                       # Pydantic data models / schemas
+│   ├── database.py                     # Firebase read/write functions
+│   │
+│   ├── knowledge_capture.py            # YOUR MODULE (knowledge capture)
+│   │   ├── seed_database()
+│   │   ├── ttl_checker()
+│   │   ├── trend_tracker()
+│   │   ├── quota_tracker()
+│   │   ├── fetch_and_parse()
+│   │   └── store_to_firebase()
+│   │
+│   ├── ai_engine.py                    # AI Engineer (Groq + HuggingFace RAG)
+│   ├── main.py                         # FastAPI entry point, all routes
+│   │
+│   └── tests/
+│       ├── test_knowledge_capture.py   # Unit tests for your module
+│       ├── test_database.py
+│       └── test_ai_engine.py
+│
+├── frontend/                           # Deploys to Vercel
+│   ├── package.json
+│   ├── .env.local                      # Frontend env vars (API base URL)
+│   │
+│   ├── public/
+│   │   └── index.html
+│   │
+│   └── src/
+│       ├── index.js
+│       ├── App.jsx
+│       ├── App.css
+│       │
+│       ├── components/
+│       │   ├── SearchForm.jsx          # User input: destination, budget, dates
+│       │   ├── ItineraryCard.jsx       # Displays generated itinerary
+│       │   ├── HotelCard.jsx           # Hotel recommendation display
+│       │   └── FlightCard.jsx          # Flight info display
+│       │
+│       ├── pages/
+│       │   ├── Home.jsx
+│       │   ├── PlanTrip.jsx
+│       │   └── SavedItineraries.jsx
+│       │
+│       └── services/
+│           └── api.js                  # Axios calls to FastAPI backend
+│
+├── firebase/
+│   ├── firestore.rules                 # Firestore security rules
+│   ├── firestore.indexes.json          # Composite indexes
+│   └── serviceAccountKey.json         # Firebase Admin SDK key (never commit)
+│
+├── docs/
+│   ├── prd.md                          # Knowledge capture PRD (this file)
+│   ├── api-contracts.md                # Endpoint definitions for all teammates
+│   └── architecture.md                # System architecture notes
+│
+├── .gitignore
+└── README.md
+```
+
+---
+
+## 2. API Keys Required
+
+Collect all keys before running Claude Code. Every key goes into `backend/.env`.
+
+### 2.1 SerpAPI (Knowledge Capture — YOUR responsibility)
+
+| Key Name | Purpose | How to Get |
+|---|---|---|
+| `SERPAPI_KEY_1` | Hotels, Attractions, Flights | serpapi.com → Dashboard → API Key |
+| `SERPAPI_KEY_2` | Rotation key 2 | Register second account |
+| `SERPAPI_KEY_3` | Rotation key 3 | Register third account |
+| `SERPAPI_KEY_4` | Rotation key 4 | Register fourth account |
+| `SERPAPI_KEY_5` | Rotation key 5 | Register fifth account |
+
+**Note:** Each team member registers one SerpAPI account using their personal/university email. Free tier gives 100 searches/month per account. Use student emails to avoid billing.
+
+**SerpAPI Endpoints used by `knowledge_capture.py`:**
+
+```
+# Hotels
+GET https://serpapi.com/search?engine=google_hotels
+    &q={city}+hotels
+    &check_in_date={date}
+    &check_out_date={date}
+    &api_key={SERPAPI_KEY}
+
+# Attractions / POI
+GET https://serpapi.com/search?engine=google_maps
+    &q=attractions+in+{city}
+    &type=search
+    &api_key={SERPAPI_KEY}
+
+# Flights (airport states only)
+GET https://serpapi.com/search?engine=google_flights
+    &departure_id={IATA_code}
+    &arrival_id=KUL
+    &outbound_date={date}
+    &api_key={SERPAPI_KEY}
+```
+
+**Malaysian Airport IATA Codes for flight seeding:**
+
+| State | Airport | IATA |
+|---|---|---|
+| Kuala Lumpur / Selangor | KLIA | KUL |
+| Kuala Lumpur / Selangor | Subang | SZB |
+| Penang | Penang International | PEN |
+| Johor | Senai | JHB |
+| Sabah (Kota Kinabalu) | KK International | BKI |
+| Sarawak (Kuching) | Kuching International | KCH |
+| Sarawak (Miri) | Miri Airport | MYY |
+| Sarawak (Sibu) | Sibu Airport | SBW |
+| Sabah (Sandakan) | Sandakan Airport | SDK |
+| Sabah (Tawau) | Tawau Airport | TWU |
+| Kelantan | Sultan Ismail Petra | KBR |
+| Terengganu | Sultan Mahmud | TGG |
+| Kedah (Alor Setar) | Sultan Abdul Halim | AOR |
+| Langkawi | Langkawi International | LGK |
+
+---
+
+### 2.2 Firebase (Backend Developer's responsibility — you need the key)
+
+| Key Name | Purpose | How to Get |
+|---|---|---|
+| `FIREBASE_PROJECT_ID` | Identifies the Firebase project | Firebase Console → Project Settings |
+| `FIREBASE_PRIVATE_KEY` | Admin SDK authentication | Service Account → Generate Key |
+| `FIREBASE_CLIENT_EMAIL` | Admin SDK authentication | Service Account JSON |
+
+**Note:** The Backend Developer generates the service account key. They share `serviceAccountKey.json` privately with the team (via WhatsApp/Drive, never GitHub).
+
+---
+
+### 2.3 Groq API (AI Engineer's responsibility)
+
+| Key Name | Purpose | How to Get |
+|---|---|---|
+| `GROQ_API_KEY` | LLM itinerary generation | console.groq.com → API Keys |
+
+---
+
+### 2.4 Hugging Face (AI Engineer's responsibility)
+
+| Key Name | Purpose | How to Get |
+|---|---|---|
+| `HUGGINGFACE_API_KEY` | Embeddings for RAG pipeline | huggingface.co → Settings → Access Tokens |
+
+---
+
+## 3. Firebase Setup Steps (Backend Developer runs this once)
+
+### Step 1 — Create Firebase Project
+1. Go to [console.firebase.google.com](https://console.firebase.google.com)
+2. Click **Add Project** → name it `trekku-kms`
+3. Disable Google Analytics (not needed for prototype)
+4. Click **Create Project**
+
+### Step 2 — Enable Firestore Database
+1. In Firebase Console → **Build** → **Firestore Database**
+2. Click **Create Database**
+3. Select **Start in test mode** (allows open read/write during development)
+4. Choose region: `asia-southeast1` (Singapore — closest to Malaysia)
+5. Click **Done**
+
+### Step 3 — Create Firestore Collections (manually seed the structure)
+Create these 5 collections in Firestore with one placeholder document each so the structure exists before `seed_database()` runs:
+
+```
+hotels/           → placeholder document: { "init": true }
+attractions/      → placeholder document: { "init": true }
+flights/          → placeholder document: { "init": true }
+trending_topics/  → placeholder document: { "init": true }
+quota_tracker/    → 5 documents (one per API key):
+    key_1: { "used": 0, "limit": 100, "reset_date": "2026-06-01" }
+    key_2: { "used": 0, "limit": 100, "reset_date": "2026-06-01" }
+    key_3: { "used": 0, "limit": 100, "reset_date": "2026-06-01" }
+    key_4: { "used": 0, "limit": 100, "reset_date": "2026-06-01" }
+    key_5: { "used": 0, "limit": 100, "reset_date": "2026-06-01" }
+```
+
+Also create one document to track seeding status:
+```
+system_flags/
+    seed_status: { "seeded": false, "seeded_at": null }
+```
+
+### Step 4 — Generate Service Account Key
+1. Firebase Console → **Project Settings** (gear icon)
+2. **Service Accounts** tab → **Generate new private key**
+3. Save as `firebase/serviceAccountKey.json`
+4. Share with team privately — **never push to GitHub**
+
+### Step 5 — Add Firebase to `.gitignore`
+Ensure this is in your `.gitignore` before first commit:
+```
+firebase/serviceAccountKey.json
+backend/.env
+frontend/.env.local
+```
+
+---
+
+## 4. Local Environment Setup
+
+### Step 1 — Clone the Repo
+```bash
+git clone https://github.com/your-team/trekku-workspace.git
+cd trekku-workspace
+```
+
+### Step 2 — Backend Setup
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate        # Mac/Linux
+venv\Scripts\activate           # Windows
+pip install -r requirements.txt
+```
+
+**`requirements.txt` contents:**
+```
+fastapi
+uvicorn
+firebase-admin
+requests
+python-dotenv
+pydantic
+groq
+huggingface_hub
+pytest
+httpx
+```
+
+### Step 3 — Create `backend/.env`
+Copy from `.env.example` and fill in your values:
+```
+# SerpAPI Keys (one per team member account)
+SERPAPI_KEY_1=your_key_here
+SERPAPI_KEY_2=your_key_here
+SERPAPI_KEY_3=your_key_here
+SERPAPI_KEY_4=your_key_here
+SERPAPI_KEY_5=your_key_here
+
+# Firebase
+FIREBASE_PROJECT_ID=trekku-kms
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+FIREBASE_CLIENT_EMAIL=firebase-adminsdk-xxxxx@trekku-kms.iam.gserviceaccount.com
+
+# Groq
+GROQ_API_KEY=your_key_here
+
+# Hugging Face
+HUGGINGFACE_API_KEY=your_key_here
+
+# App
+ENVIRONMENT=development
+```
+
+### Step 4 — Create `backend/.env.example` (commit this, not `.env`)
+```
+SERPAPI_KEY_1=
+SERPAPI_KEY_2=
+SERPAPI_KEY_3=
+SERPAPI_KEY_4=
+SERPAPI_KEY_5=
+FIREBASE_PROJECT_ID=
+FIREBASE_PRIVATE_KEY=
+FIREBASE_CLIENT_EMAIL=
+GROQ_API_KEY=
+HUGGINGFACE_API_KEY=
+ENVIRONMENT=development
+```
+
+### Step 5 — Run Backend Locally
+```bash
+cd backend
+uvicorn main:app --reload --port 8000
+```
+API will be available at: `http://localhost:8000`
+Auto-generated docs at: `http://localhost:8000/docs`
+
+### Step 6 — Frontend Setup
+```bash
+cd frontend
+npm install
+```
+
+Create `frontend/.env.local`:
+```
+REACT_APP_API_BASE_URL=http://localhost:8000
+```
+
+Run frontend:
+```bash
+npm start
+```
+
+---
+
+## 5. Steps Before Running Claude Code for `knowledge_capture.py`
+
+Complete these in order before asking Claude Code to generate the module:
+
+| # | Step | Owner | Done? |
+|---|---|---|---|
+| 1 | Firebase project created and Firestore enabled | Backend Dev | ☐ |
+| 2 | All 5 Firestore collections created with placeholder docs | Backend Dev | ☐ |
+| 3 | `quota_tracker/` documents created with 5 key entries | Backend Dev | ☐ |
+| 4 | `system_flags/seed_status` document created | Backend Dev | ☐ |
+| 5 | `serviceAccountKey.json` generated and shared privately | Backend Dev | ☐ |
+| 6 | All 5 SerpAPI accounts registered, keys collected | All members | ☐ |
+| 7 | `backend/.env` created with all keys filled in | You | ☐ |
+| 8 | `backend/requirements.txt` installed in virtual env | You | ☐ |
+| 9 | `backend/models.py` has Pydantic schemas for Hotel, Attraction, Flight | Backend Dev | ☐ |
+| 10 | `backend/database.py` has `get_record()` and `set_record()` stub functions | Backend Dev | ☐ |
+| 11 | `backend/config.py` initializes Firebase Admin SDK from `.env` | Backend Dev | ☐ |
+| 12 | PRD (`docs/prd.md`) shared with Claude Code as context | You | ☐ |
+
+---
+
+## 6. Claude Code Prompt to Generate `knowledge_capture.py`
+
+Once all steps above are complete, use this prompt in Claude Code:
+
+```
+Read the PRD at docs/prd.md and the existing files:
+- backend/config.py (Firebase init)
+- backend/models.py (Pydantic schemas)
+- backend/database.py (get_record, set_record stubs)
+
+Generate backend/knowledge_capture.py with these functions:
+1. seed_database() — one-time batch fetch for TREKKU_SEED list
+2. ttl_checker(entity_id, collection) — returns FRESH / STALE / NOT_FOUND
+3. trend_tracker(topic_name) — increments counter, flags re-fetch at threshold 10
+4. quota_tracker() — rotates across SERPAPI_KEY_1 to _5, returns FALLBACK when all exhausted
+5. fetch_and_parse(query, entity_type) — calls SerpAPI, maps to clean schema
+6. store_to_firebase(record, collection) — writes to Firestore with TTL fields
+
+TTL rules: hotels metadata 30 days, hotels pricing 7 days,
+attractions 60 days, flights 7 days.
+
+Also generate backend/tests/test_knowledge_capture.py
+covering all functions as described in the PRD.
+```
+
+---
+
+## 7. Git Workflow for the Team
+
+```bash
+# Each member works on their own branch
+git checkout -b feature/knowledge-capture     # Your branch
+git checkout -b feature/ai-engine             # AI Engineer
+git checkout -b feature/backend-api           # Backend Dev
+git checkout -b feature/frontend-ui           # Frontend Dev
+
+# Commit often
+git add .
+git commit -m "feat: add ttl_checker and quota_tracker functions"
+
+# Push and open PR to main
+git push origin feature/knowledge-capture
+```
+
+**Branch naming convention:**
+- `feature/knowledge-capture` — your module
+- `feature/ai-engine` — Groq + HuggingFace RAG
+- `feature/backend-api` — FastAPI routes + database.py
+- `feature/frontend-ui` — React components
+- `feature/api-integration` — SerpAPI connector scripts
