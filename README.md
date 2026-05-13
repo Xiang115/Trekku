@@ -44,6 +44,7 @@ pytest tests/
 ```
 
 ## Project Structure
+```
 trekku-workspace/
 │
 │
