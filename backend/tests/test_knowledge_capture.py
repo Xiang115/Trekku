@@ -1,4 +1,5 @@
 import os
+import pytest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 
@@ -16,6 +17,14 @@ from knowledge_capture import (
     _reset_monthly_quota,
     refresh_all,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_conv_cache():
+    from knowledge_capture import _conv_cache
+    _conv_cache.clear()
+    yield
+    _conv_cache.clear()
 
 
 # ── generate_id ───────────────────────────────────────────────────────────────
@@ -140,8 +149,8 @@ def test_trend_tracker_creates_new_document_when_topic_not_found():
 # ── fetch_and_parse ───────────────────────────────────────────────────────────
 
 def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
         "properties": [
             {
                 "name": "Grand Hotel",
@@ -159,7 +168,7 @@ def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
             },
         ]
     }
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         results = fetch_and_parse("Kuala Lumpur", "hotels", "fake_key")
     assert isinstance(results, list)
     assert len(results) == 2
@@ -170,8 +179,8 @@ def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
 
 
 def test_fetch_and_parse_excludes_sponsored_hotel():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
         "properties": [
             {"name": "Ads Hotel", "sponsored": True},
             {
@@ -183,7 +192,7 @@ def test_fetch_and_parse_excludes_sponsored_hotel():
             }
         ]
     }
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         results = fetch_and_parse("KL", "hotels", "fake_key")
     assert results is not None
     assert len(results) == 1
@@ -191,22 +200,22 @@ def test_fetch_and_parse_excludes_sponsored_hotel():
 
 
 def test_fetch_and_parse_returns_none_when_response_is_empty():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"properties": []}
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    mock_client = MagicMock()
+    mock_client.search.return_value = {"properties": []}
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         result = fetch_and_parse("KL", "hotels", "fake_key")
     assert result is None
 
 
 def test_fetch_and_parse_returns_none_on_request_exception():
-    with patch("knowledge_capture.requests.get", side_effect=Exception("timeout")):
+    with patch("knowledge_capture.serpapi.Client", side_effect=Exception("timeout")):
         result = fetch_and_parse("KL", "hotels", "fake_key")
     assert result is None
 
 
 def test_fetch_and_parse_flight_returns_per_flight_records():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
         "best_flights": [
             {
                 "flights": [
@@ -234,7 +243,7 @@ def test_fetch_and_parse_flight_returns_per_flight_records():
             },
         ]
     }
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         results = fetch_and_parse("Johor Bahru", "flights", "fake_key", iata="JHB")
 
     assert isinstance(results, list)
@@ -259,7 +268,7 @@ def test_store_to_firebase_record_contains_last_updated():
     with patch("knowledge_capture.set_record"):
         with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
             with patch("knowledge_capture.update_record"):
-                store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(record, "hotels", "hotels", "hotel_id")
     assert "last_updated" in record
 
 
@@ -268,7 +277,7 @@ def test_store_to_firebase_record_contains_ttl_expires():
     with patch("knowledge_capture.set_record"):
         with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
             with patch("knowledge_capture.update_record"):
-                store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(record, "hotels", "hotels", "hotel_id")
     assert "ttl_expires" in record
 
 
@@ -277,15 +286,15 @@ def test_store_to_firebase_second_call_uses_set_record_not_create():
     with patch("knowledge_capture.set_record") as mock_set:
         with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
             with patch("knowledge_capture.update_record"):
-                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id", "key_1")
-                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id")
+                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id")
     assert mock_set.call_count == 2
 
 
 def test_store_to_firebase_returns_false_on_write_failure():
     record = {"hotel_id": "hotel_abc", "name": "Test"}
     with patch("knowledge_capture.set_record", side_effect=Exception("Firebase error")):
-        result = store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+        result = store_to_firebase(record, "hotels", "hotels", "hotel_id")
     assert result is False
 
 
