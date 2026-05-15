@@ -236,7 +236,7 @@ def _increment_quota(key_id: str):
         update_record("quota_tracker", key_id, {"used": record["used"] + 1})
 
 
-def _reset_monthly_quota():
+def _reset_monthly_quota() -> None:
     for i in range(1, 6):
         key_id = f"key_{i}"
         record = get_record("quota_tracker", key_id)

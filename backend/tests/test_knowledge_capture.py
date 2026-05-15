@@ -487,3 +487,4 @@ def test_reset_monthly_quota_skips_keys_with_no_record():
 
     assert mock_update.call_count == 1
     assert mock_update.call_args.args[1] == "key_1"
+    assert mock_update.call_args.args[2] == {"used": 0}
