@@ -2,7 +2,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
 
-# ─── HOTEL ───────────────────────────────────────────
+
+# ─── SHARED ──────────────────────────────────────────
 
 class Location(BaseModel):
     city: str
@@ -10,10 +11,14 @@ class Location(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
 
+
+# ─── HOTEL ───────────────────────────────────────────
+
 class PricePerNight(BaseModel):
     min: float
     max: float
     currency: str = "MYR"
+
 
 class Hotel(BaseModel):
     hotel_id: str
@@ -27,57 +32,63 @@ class Hotel(BaseModel):
     ttl_expires: str                 # ISO timestamp
     source: str = "serpapi_hotels"
 
+
 # ─── ATTRACTION / POI ────────────────────────────────
 
 class Attraction(BaseModel):
     attraction_id: str
     name: str
     location: Location
-    category: str                    # "nature" | "cultural" | "entertainment"
+    category: Optional[str] = None
     opening_hours: Optional[str] = None
-    estimated_duration: Optional[str] = None   # e.g. "2-3 hours"
-    popularity_score: float = 0.0   # seeded from Google review rating
+    estimated_duration: Optional[str] = None
+    popularity_score: float = 0.0
     last_updated: str
     ttl_expires: str
-    source: str = "serpapi_places"
+    source: str = "serpapi_attractions"
+
 
 # ─── FLIGHT ──────────────────────────────────────────
 
-class FlightPriceRange(BaseModel):
-    min: float
-    max: float
-    currency: str = "MYR"
-
 class Flight(BaseModel):
     flight_id: str
-    origin_state: str               # e.g. "Penang"
-    origin_iata: str                # e.g. "PEN"
+    origin_state: str
+    origin_iata: str
     destination: str = "Selangor"
     destination_iata: str = "KUL"
-    price_range: FlightPriceRange
-    duration: Optional[str] = None  # e.g. "1h 10m"
+    departure_time: Optional[str] = None
+    arrival_time: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    airline: str
+    flight_number: str
+    price: float
+    currency: str = "MYR"
+    location: Location
     last_updated: str
     ttl_expires: str
     source: str = "serpapi_flights"
+
 
 # ─── TRENDING TOPIC ──────────────────────────────────
 
 class TrendingTopic(BaseModel):
     topic_name: str
     search_count: int = 0
-    last_reset: str                  # ISO timestamp
+    last_reset: str
     last_fetched: Optional[str] = None
+
 
 # ─── QUOTA TRACKER ───────────────────────────────────
 
 class QuotaTracker(BaseModel):
-    key_id: str                      # "key_1" to "key_5"
+    key_id: str
     used: int = 0
-    limit: int = 100
-    reset_date: str                  # e.g. "2026-06-01"
+    limit: int = 250
+    reset_date: str
+
 
 # ─── SYSTEM FLAG ─────────────────────────────────────
 
 class SystemFlag(BaseModel):
     seeded: bool = False
-    seeded_at: Optional[str] = None  # null until seed_database() completes
+    seeded_at: Optional[str] = None
