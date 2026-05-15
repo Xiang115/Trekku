@@ -14,6 +14,7 @@ from knowledge_capture import (
     TREKKU_SEED,
     _write_ttl_sentinel,
     _reset_monthly_quota,
+    refresh_all,
 )
 
 
@@ -488,3 +489,97 @@ def test_reset_monthly_quota_skips_keys_with_no_record():
     assert mock_update.call_count == 1
     assert mock_update.call_args.args[1] == "key_1"
     assert mock_update.call_args.args[2] == {"used": 0}
+
+
+# ── refresh_all ───────────────────────────────────────────────────────────────
+
+def test_refresh_all_calls_fetch_for_every_seed_entry():
+    def fake_fetch(query, entity_type, api_key, iata=None, travel_date=None):
+        if entity_type == "hotels":
+            return [{"hotel_id": f"hotel_{query}", "name": f"Hotel {query}"}]
+        if entity_type == "attractions":
+            return [{"attraction_id": f"attr_{query}", "name": f"Place {query}"}]
+        if entity_type == "flights":
+            return [{"flight_id": f"flight_{query}", "airline": "AirAsia"}]
+        return None
+
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", side_effect=fake_fetch) as mock_fetch, \
+         patch("knowledge_capture.store_to_firebase", return_value=True), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    hotel_calls = [c for c in mock_fetch.call_args_list if c.args[1] == "hotels"]
+    attraction_calls = [c for c in mock_fetch.call_args_list if c.args[1] == "attractions"]
+    flight_calls = [c for c in mock_fetch.call_args_list if c.args[1] == "flights"]
+
+    assert len(hotel_calls) == len(TREKKU_SEED["cities"])
+    assert len(attraction_calls) == len(TREKKU_SEED["cities"])
+    assert len(flight_calls) == len(TREKKU_SEED["flight_origins"])
+    assert summary["errors"] == 0
+
+
+def test_refresh_all_counts_errors_when_fetch_returns_none():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", return_value=None), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    total_seed_entries = len(TREKKU_SEED["cities"]) * 2 + len(TREKKU_SEED["flight_origins"])
+    assert summary["errors"] == total_seed_entries
+    assert summary["hotels"] == 0
+    assert summary["attractions"] == 0
+    assert summary["flights"] == 0
+
+
+def test_refresh_all_stops_on_quota_fallback_without_calling_fetch():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("FALLBACK", None)), \
+         patch("knowledge_capture.fetch_and_parse") as mock_fetch, \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    mock_fetch.assert_not_called()
+    assert summary["errors"] > 0
+
+
+def test_refresh_all_calls_reset_on_first_of_month():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 1
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", return_value=None), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture._reset_monthly_quota") as mock_reset, \
+         patch("knowledge_capture.datetime", mock_dt):
+        refresh_all()
+
+    mock_reset.assert_called_once()
+
+
+def test_refresh_all_does_not_reset_quota_mid_month():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", return_value=None), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture._reset_monthly_quota") as mock_reset, \
+         patch("knowledge_capture.datetime", mock_dt):
+        refresh_all()
+
+    mock_reset.assert_not_called()
