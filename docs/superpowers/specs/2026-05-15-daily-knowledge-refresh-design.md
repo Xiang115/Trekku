@@ -117,6 +117,22 @@ No changes to `config.py` or `database.py` are needed — the service account pa
 
 ---
 
+## Model Reconciliation (`backend/models.py`)
+
+`models.py` is an earlier draft that diverged from the schema `knowledge_capture.py` actually writes. All new code must use these models for type structure. The following fixes are required before `refresh_all()` can use them:
+
+| Model | Current (wrong) | Correct |
+|---|---|---|
+| `Flight.price_range` | `FlightPriceRange` (min/max) | `price: float` — single one-way fare |
+| `Flight.duration` | `str` (e.g. `"1h 10m"`) | `duration_minutes: Optional[int]` |
+| `Flight` missing fields | — | add `airline: str`, `flight_number: str`, `departure_time: Optional[str]`, `arrival_time: Optional[str]` |
+| `Attraction.source` default | `"serpapi_places"` | `"serpapi_attractions"` |
+| `QuotaTracker.limit` default | `100` | `250` |
+
+`FlightPriceRange` becomes unused after the fix and should be removed.
+
+---
+
 ## Out of Scope
 
 - Expanding the seed list beyond `TREKKU_SEED` — city/attraction/flight scope is fixed
