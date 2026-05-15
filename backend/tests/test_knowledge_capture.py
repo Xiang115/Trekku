@@ -13,6 +13,7 @@ from knowledge_capture import (
     capture,
     TREKKU_SEED,
     _write_ttl_sentinel,
+    _reset_monthly_quota,
 )
 
 
@@ -455,3 +456,34 @@ def test_capture_calls_fetch_and_parse_when_ttl_is_stale():
                         capture("KL", "hotels", city="KL")
 
     mock_fetch.assert_called_once()
+
+
+# ── _reset_monthly_quota ──────────────────────────────────────────────────────
+
+def test_reset_monthly_quota_zeroes_used_for_all_active_keys():
+    def get_record_side(collection, doc_id):
+        if collection == "quota_tracker":
+            return {"key_id": doc_id, "used": 80, "limit": 250, "reset_date": "2026-06-01"}
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side), \
+         patch("knowledge_capture.update_record") as mock_update:
+        _reset_monthly_quota()
+
+    assert mock_update.call_count == 5
+    for call in mock_update.call_args_list:
+        assert call.args[2] == {"used": 0}
+
+
+def test_reset_monthly_quota_skips_keys_with_no_record():
+    def get_record_side(collection, doc_id):
+        if doc_id == "key_1":
+            return {"key_id": "key_1", "used": 50, "limit": 250, "reset_date": "2026-06-01"}
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side), \
+         patch("knowledge_capture.update_record") as mock_update:
+        _reset_monthly_quota()
+
+    assert mock_update.call_count == 1
+    assert mock_update.call_args.args[1] == "key_1"

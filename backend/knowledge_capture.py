@@ -236,6 +236,15 @@ def _increment_quota(key_id: str):
         update_record("quota_tracker", key_id, {"used": record["used"] + 1})
 
 
+def _reset_monthly_quota():
+    for i in range(1, 6):
+        key_id = f"key_{i}"
+        record = get_record("quota_tracker", key_id)
+        if record:
+            update_record("quota_tracker", key_id, {"used": 0})
+            print(f"[quota] Reset {key_id}")
+
+
 def _write_ttl_sentinel(collection: str, entity_id: str, entity_type: str):
     now = datetime.now(timezone.utc)
     set_record(collection, entity_id, {
