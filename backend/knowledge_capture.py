@@ -348,7 +348,8 @@ def refresh_all() -> dict:
             if results:
                 _increment_quota(key_id)
                 for item in results:
-                    store_to_firebase(item, entity_type, entity_type, _ID_FIELD[entity_type])
+                    if not store_to_firebase(item, entity_type, entity_type, _ID_FIELD[entity_type]):
+                        summary["errors"] += 1
                 _write_ttl_sentinel(
                     entity_type,
                     generate_id(_ENTITY_PREFIX[entity_type], city, city),
@@ -370,10 +371,11 @@ def refresh_all() -> dict:
         if results:
             _increment_quota(key_id)
             for item in results:
-                store_to_firebase(item, "flights", "flights", "flight_id")
+                if not store_to_firebase(item, "flights", "flights", "flight_id"):
+                    summary["errors"] += 1
             _write_ttl_sentinel(
                 "flights",
-                generate_id("flight", origin["state"], "selangor"),
+                generate_id("flight", origin["state"], origin["iata"]),
                 "flights",
             )
             summary["flights"] += len(results)

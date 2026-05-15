@@ -510,7 +510,7 @@ def test_refresh_all_calls_fetch_for_every_seed_entry():
          patch("knowledge_capture.fetch_and_parse", side_effect=fake_fetch) as mock_fetch, \
          patch("knowledge_capture.store_to_firebase", return_value=True), \
          patch("knowledge_capture._increment_quota"), \
-         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture._write_ttl_sentinel") as mock_sentinel, \
          patch("knowledge_capture.datetime", mock_dt):
         summary = refresh_all()
 
@@ -522,6 +522,11 @@ def test_refresh_all_calls_fetch_for_every_seed_entry():
     assert len(attraction_calls) == len(TREKKU_SEED["cities"])
     assert len(flight_calls) == len(TREKKU_SEED["flight_origins"])
     assert summary["errors"] == 0
+
+    flight_sentinel_ids = {
+        c.args[1] for c in mock_sentinel.call_args_list if c.args[0] == "flights"
+    }
+    assert len(flight_sentinel_ids) == len(TREKKU_SEED["flight_origins"])
 
 
 def test_refresh_all_counts_errors_when_fetch_returns_none():
