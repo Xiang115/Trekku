@@ -1,6 +1,5 @@
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
 
 
 # ─── SHARED ──────────────────────────────────────────
@@ -54,19 +53,19 @@ class Flight(BaseModel):
     flight_id: str
     origin_state: str
     origin_iata: str
-    destination: str = "Selangor"
-    destination_iata: str = "KUL"
-    departure_time: Optional[str] = None
-    arrival_time: Optional[str] = None
-    duration_minutes: Optional[int] = None
     airline: str
     flight_number: str
     price: float
-    currency: str = "MYR"
     location: Location
     last_updated: str
     ttl_expires: str
+    destination: str = "Selangor"
+    destination_iata: str = "KUL"
+    currency: str = "MYR"
     source: str = "serpapi_flights"
+    departure_time: Optional[str] = None
+    arrival_time: Optional[str] = None
+    duration_minutes: Optional[int] = None
 
 
 # ─── TRENDING TOPIC ──────────────────────────────────
@@ -81,7 +80,7 @@ class TrendingTopic(BaseModel):
 # ─── QUOTA TRACKER ───────────────────────────────────
 
 class QuotaTracker(BaseModel):
-    key_id: str
+    key_id: str  # "key_1" to "key_5"
     used: int = 0
     limit: int = 250
     reset_date: str

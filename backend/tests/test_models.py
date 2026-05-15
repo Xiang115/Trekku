@@ -57,3 +57,18 @@ def test_quota_tracker_default_limit_is_250():
     from models import QuotaTracker
     qt = QuotaTracker(key_id="key_1", reset_date="2026-06-01")
     assert qt.limit == 250
+
+
+def test_flight_model_rejects_old_price_range_shape():
+    from pydantic import ValidationError
+    from models import Flight, Location
+    with pytest.raises(ValidationError):
+        Flight(
+            flight_id="flight_abc",
+            origin_state="Johor Bahru",
+            origin_iata="JHB",
+            price_range={"min": 100, "max": 200, "currency": "MYR"},
+            location=Location(city="Johor Bahru", country="Malaysia"),
+            last_updated="2026-05-15T10:00:00+00:00",
+            ttl_expires="2026-05-22T10:00:00+00:00",
+        )
