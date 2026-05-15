@@ -1,14 +1,18 @@
 """
 Daily refresh script — called by GitHub Actions cron.
-    python run_refresh.py
+    cd backend && python run_refresh.py
 """
 import sys
 from knowledge_capture import refresh_all
 
 
 def main() -> dict:
-    summary = refresh_all()
-    print(f"Refresh complete: {summary}")
+    try:
+        summary = refresh_all()
+    except Exception as exc:
+        print(f"[run_refresh] Unhandled error: {exc}", file=sys.stderr)
+        return {"hotels": 0, "attractions": 0, "flights": 0, "errors": 1}
+    print(f"Refresh complete: {summary}", file=sys.stderr)
     return summary
 
 
