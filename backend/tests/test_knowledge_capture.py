@@ -172,7 +172,7 @@ def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
         results = fetch_and_parse("Kuala Lumpur", "hotels", "fake_key")
     assert isinstance(results, list)
     assert len(results) == 2
-    assert set(results[0].keys()) == {"hotel_id", "name", "location", "price_per_night", "rating", "amenities", "category"}
+    assert set(results[0].keys()) == {"hotel_id", "name", "location", "price_per_night", "rating", "review_count", "amenities", "category"}
     assert results[0]["name"] == "Grand Hotel"
     assert results[0]["category"] == "mid-range"
     assert results[1]["category"] == "budget"
@@ -520,6 +520,7 @@ def test_refresh_all_calls_fetch_for_every_seed_entry():
          patch("knowledge_capture.store_to_firebase", return_value=True), \
          patch("knowledge_capture._increment_quota"), \
          patch("knowledge_capture._write_ttl_sentinel") as mock_sentinel, \
+         patch("knowledge_capture.capture_rating_snapshot", return_value=0), \
          patch("knowledge_capture.datetime", mock_dt):
         summary = refresh_all()
 
@@ -546,6 +547,7 @@ def test_refresh_all_counts_errors_when_fetch_returns_none():
          patch("knowledge_capture.fetch_and_parse", return_value=None), \
          patch("knowledge_capture._increment_quota"), \
          patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture.capture_rating_snapshot", return_value=0), \
          patch("knowledge_capture.datetime", mock_dt):
         summary = refresh_all()
 
@@ -562,6 +564,7 @@ def test_refresh_all_stops_on_quota_fallback_without_calling_fetch():
 
     with patch("knowledge_capture.quota_tracker", return_value=("FALLBACK", None)), \
          patch("knowledge_capture.fetch_and_parse") as mock_fetch, \
+         patch("knowledge_capture.capture_rating_snapshot", return_value=0), \
          patch("knowledge_capture.datetime", mock_dt):
         summary = refresh_all()
 
@@ -578,6 +581,7 @@ def test_refresh_all_calls_reset_on_first_of_month():
          patch("knowledge_capture._increment_quota"), \
          patch("knowledge_capture._write_ttl_sentinel"), \
          patch("knowledge_capture._reset_monthly_quota") as mock_reset, \
+         patch("knowledge_capture.capture_rating_snapshot", return_value=0), \
          patch("knowledge_capture.datetime", mock_dt):
         refresh_all()
 
@@ -593,7 +597,81 @@ def test_refresh_all_does_not_reset_quota_mid_month():
          patch("knowledge_capture._increment_quota"), \
          patch("knowledge_capture._write_ttl_sentinel"), \
          patch("knowledge_capture._reset_monthly_quota") as mock_reset, \
+         patch("knowledge_capture.capture_rating_snapshot", return_value=0), \
          patch("knowledge_capture.datetime", mock_dt):
         refresh_all()
 
     mock_reset.assert_not_called()
+
+
+# ── capture_rating_snapshot ───────────────────────────────────────────────────
+
+def test_capture_rating_snapshot_hotel_writes_correct_fields():
+    hotel_records = [{
+        "hotel_id": "hotel_abc123",
+        "name": "Grand Hotel",
+        "location": {"city": "Kuala Lumpur"},
+        "rating": 4.5,
+        "review_count": 200,
+    }]
+    with patch("knowledge_capture.set_record") as mock_set:
+        from knowledge_capture import capture_rating_snapshot
+        count = capture_rating_snapshot(hotel_records, "hotels", "2026-05-17")
+    assert count == 1
+    call_args = mock_set.call_args
+    assert call_args[0][0] == "rating_snapshots"
+    assert call_args[0][1] == "hotel_abc123_2026-05-17"
+    doc = call_args[0][2]
+    assert doc["rating"] == 4.5
+    assert doc["review_count"] == 200
+    assert doc["date"] == "2026-05-17"
+    assert doc["entity_type"] == "hotels"
+
+
+def test_capture_rating_snapshot_attraction_maps_popularity_score():
+    records = [{
+        "attraction_id": "attraction_xyz",
+        "name": "KLCC",
+        "location": {"city": "KLCC"},
+        "popularity_score": 4.8,
+        "review_count": 5000,
+    }]
+    with patch("knowledge_capture.set_record") as mock_set:
+        from knowledge_capture import capture_rating_snapshot
+        capture_rating_snapshot(records, "attractions", "2026-05-17")
+    doc = mock_set.call_args[0][2]
+    assert doc["rating"] == 4.8
+    assert doc["entity_type"] == "attractions"
+
+
+def test_capture_rating_snapshot_flight_takes_min_price():
+    records = [
+        {"flight_id": "f1", "origin_state": "Johor Bahru", "flight_number": "AK 111", "price": 89},
+        {"flight_id": "f2", "origin_state": "Johor Bahru", "flight_number": "MH 222", "price": 150},
+    ]
+    with patch("knowledge_capture.set_record") as mock_set:
+        from knowledge_capture import capture_rating_snapshot
+        count = capture_rating_snapshot(records, "flights", "2026-05-17")
+    assert count == 1
+    doc = mock_set.call_args[0][2]
+    assert doc["price_min"] == 89
+    assert doc["entity_type"] == "flights"
+
+
+def test_capture_rating_snapshot_returns_zero_for_empty_input():
+    with patch("knowledge_capture.set_record") as mock_set:
+        from knowledge_capture import capture_rating_snapshot
+        count = capture_rating_snapshot([], "hotels", "2026-05-17")
+    assert count == 0
+    mock_set.assert_not_called()
+
+
+def test_capture_rating_snapshot_uses_idempotent_document_id():
+    records = [{"hotel_id": "h1", "name": "H", "location": {"city": "KL"}, "rating": 4.0, "review_count": 10}]
+    with patch("knowledge_capture.set_record") as mock_set:
+        from knowledge_capture import capture_rating_snapshot
+        capture_rating_snapshot(records, "hotels", "2026-05-17")
+        capture_rating_snapshot(records, "hotels", "2026-05-17")
+    assert mock_set.call_count == 2
+    ids = [c[0][1] for c in mock_set.call_args_list]
+    assert ids[0] == ids[1] == "h1_2026-05-17"
