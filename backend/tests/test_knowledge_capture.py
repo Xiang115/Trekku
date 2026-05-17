@@ -1,4 +1,5 @@
 import os
+import pytest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 
@@ -13,7 +14,17 @@ from knowledge_capture import (
     capture,
     TREKKU_SEED,
     _write_ttl_sentinel,
+    _reset_monthly_quota,
+    refresh_all,
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_conv_cache():
+    from knowledge_capture import _conv_cache
+    _conv_cache.clear()
+    yield
+    _conv_cache.clear()
 
 
 # ── generate_id ───────────────────────────────────────────────────────────────
@@ -138,8 +149,8 @@ def test_trend_tracker_creates_new_document_when_topic_not_found():
 # ── fetch_and_parse ───────────────────────────────────────────────────────────
 
 def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
         "properties": [
             {
                 "name": "Grand Hotel",
@@ -157,7 +168,7 @@ def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
             },
         ]
     }
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         results = fetch_and_parse("Kuala Lumpur", "hotels", "fake_key")
     assert isinstance(results, list)
     assert len(results) == 2
@@ -168,8 +179,8 @@ def test_fetch_and_parse_hotel_returns_list_with_correct_schema():
 
 
 def test_fetch_and_parse_excludes_sponsored_hotel():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
         "properties": [
             {"name": "Ads Hotel", "sponsored": True},
             {
@@ -181,7 +192,7 @@ def test_fetch_and_parse_excludes_sponsored_hotel():
             }
         ]
     }
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         results = fetch_and_parse("KL", "hotels", "fake_key")
     assert results is not None
     assert len(results) == 1
@@ -189,22 +200,22 @@ def test_fetch_and_parse_excludes_sponsored_hotel():
 
 
 def test_fetch_and_parse_returns_none_when_response_is_empty():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"properties": []}
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    mock_client = MagicMock()
+    mock_client.search.return_value = {"properties": []}
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         result = fetch_and_parse("KL", "hotels", "fake_key")
     assert result is None
 
 
 def test_fetch_and_parse_returns_none_on_request_exception():
-    with patch("knowledge_capture.requests.get", side_effect=Exception("timeout")):
+    with patch("knowledge_capture.serpapi.Client", side_effect=Exception("timeout")):
         result = fetch_and_parse("KL", "hotels", "fake_key")
     assert result is None
 
 
 def test_fetch_and_parse_flight_returns_per_flight_records():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {
+    mock_client = MagicMock()
+    mock_client.search.return_value = {
         "best_flights": [
             {
                 "flights": [
@@ -232,7 +243,7 @@ def test_fetch_and_parse_flight_returns_per_flight_records():
             },
         ]
     }
-    with patch("knowledge_capture.requests.get", return_value=mock_resp):
+    with patch("knowledge_capture.serpapi.Client", return_value=mock_client):
         results = fetch_and_parse("Johor Bahru", "flights", "fake_key", iata="JHB")
 
     assert isinstance(results, list)
@@ -257,7 +268,7 @@ def test_store_to_firebase_record_contains_last_updated():
     with patch("knowledge_capture.set_record"):
         with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
             with patch("knowledge_capture.update_record"):
-                store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(record, "hotels", "hotels", "hotel_id")
     assert "last_updated" in record
 
 
@@ -266,7 +277,7 @@ def test_store_to_firebase_record_contains_ttl_expires():
     with patch("knowledge_capture.set_record"):
         with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
             with patch("knowledge_capture.update_record"):
-                store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(record, "hotels", "hotels", "hotel_id")
     assert "ttl_expires" in record
 
 
@@ -275,15 +286,15 @@ def test_store_to_firebase_second_call_uses_set_record_not_create():
     with patch("knowledge_capture.set_record") as mock_set:
         with patch("knowledge_capture.get_record", return_value={"used": 5, "limit": 100}):
             with patch("knowledge_capture.update_record"):
-                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id", "key_1")
-                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id", "key_1")
+                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id")
+                store_to_firebase(dict(record), "hotels", "hotels", "hotel_id")
     assert mock_set.call_count == 2
 
 
 def test_store_to_firebase_returns_false_on_write_failure():
     record = {"hotel_id": "hotel_abc", "name": "Test"}
     with patch("knowledge_capture.set_record", side_effect=Exception("Firebase error")):
-        result = store_to_firebase(record, "hotels", "hotels", "hotel_id", "key_1")
+        result = store_to_firebase(record, "hotels", "hotels", "hotel_id")
     assert result is False
 
 
@@ -455,3 +466,134 @@ def test_capture_calls_fetch_and_parse_when_ttl_is_stale():
                         capture("KL", "hotels", city="KL")
 
     mock_fetch.assert_called_once()
+
+
+# ── _reset_monthly_quota ──────────────────────────────────────────────────────
+
+def test_reset_monthly_quota_zeroes_used_for_all_active_keys():
+    def get_record_side(collection, doc_id):
+        if collection == "quota_tracker":
+            return {"key_id": doc_id, "used": 80, "limit": 250, "reset_date": "2026-06-01"}
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side), \
+         patch("knowledge_capture.update_record") as mock_update:
+        _reset_monthly_quota()
+
+    assert mock_update.call_count == 5
+    for call in mock_update.call_args_list:
+        assert call.args[2] == {"used": 0}
+
+
+def test_reset_monthly_quota_skips_keys_with_no_record():
+    def get_record_side(collection, doc_id):
+        if doc_id == "key_1":
+            return {"key_id": "key_1", "used": 50, "limit": 250, "reset_date": "2026-06-01"}
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side), \
+         patch("knowledge_capture.update_record") as mock_update:
+        _reset_monthly_quota()
+
+    assert mock_update.call_count == 1
+    assert mock_update.call_args.args[1] == "key_1"
+    assert mock_update.call_args.args[2] == {"used": 0}
+
+
+# ── refresh_all ───────────────────────────────────────────────────────────────
+
+def test_refresh_all_calls_fetch_for_every_seed_entry():
+    def fake_fetch(query, entity_type, api_key, iata=None, travel_date=None):
+        if entity_type == "hotels":
+            return [{"hotel_id": f"hotel_{query}", "name": f"Hotel {query}"}]
+        if entity_type == "attractions":
+            return [{"attraction_id": f"attr_{query}", "name": f"Place {query}"}]
+        if entity_type == "flights":
+            return [{"flight_id": f"flight_{query}", "airline": "AirAsia"}]
+        return None
+
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", side_effect=fake_fetch) as mock_fetch, \
+         patch("knowledge_capture.store_to_firebase", return_value=True), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel") as mock_sentinel, \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    hotel_calls = [c for c in mock_fetch.call_args_list if c.args[1] == "hotels"]
+    attraction_calls = [c for c in mock_fetch.call_args_list if c.args[1] == "attractions"]
+    flight_calls = [c for c in mock_fetch.call_args_list if c.args[1] == "flights"]
+
+    assert len(hotel_calls) == len(TREKKU_SEED["cities"])
+    assert len(attraction_calls) == len(TREKKU_SEED["cities"])
+    assert len(flight_calls) == len(TREKKU_SEED["flight_origins"])
+    assert summary["errors"] == 0
+
+    flight_sentinel_ids = {
+        c.args[1] for c in mock_sentinel.call_args_list if c.args[0] == "flights"
+    }
+    assert len(flight_sentinel_ids) == len(TREKKU_SEED["flight_origins"])
+
+
+def test_refresh_all_counts_errors_when_fetch_returns_none():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", return_value=None), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    total_seed_entries = len(TREKKU_SEED["cities"]) * 2 + len(TREKKU_SEED["flight_origins"])
+    assert summary["errors"] == total_seed_entries
+    assert summary["hotels"] == 0
+    assert summary["attractions"] == 0
+    assert summary["flights"] == 0
+
+
+def test_refresh_all_stops_on_quota_fallback_without_calling_fetch():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("FALLBACK", None)), \
+         patch("knowledge_capture.fetch_and_parse") as mock_fetch, \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    mock_fetch.assert_not_called()
+    assert summary["errors"] > 0
+
+
+def test_refresh_all_calls_reset_on_first_of_month():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 1
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", return_value=None), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture._reset_monthly_quota") as mock_reset, \
+         patch("knowledge_capture.datetime", mock_dt):
+        refresh_all()
+
+    mock_reset.assert_called_once()
+
+
+def test_refresh_all_does_not_reset_quota_mid_month():
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", return_value=None), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture._reset_monthly_quota") as mock_reset, \
+         patch("knowledge_capture.datetime", mock_dt):
+        refresh_all()
+
+    mock_reset.assert_not_called()

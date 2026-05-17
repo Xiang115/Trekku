@@ -17,7 +17,7 @@ for i in range(1, 6):
     set_record("quota_tracker", key_id, {
         "key_id": key_id,
         "used": 0,
-        "limit": 100,
+        "limit": 250,
         "reset_date": RESET_DATE,
     })
     print(f"Reset quota_tracker/{key_id}")

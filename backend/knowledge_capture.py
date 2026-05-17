@@ -236,6 +236,15 @@ def _increment_quota(key_id: str):
         update_record("quota_tracker", key_id, {"used": record["used"] + 1})
 
 
+def _reset_monthly_quota() -> None:
+    for i in range(1, 6):
+        key_id = f"key_{i}"
+        record = get_record("quota_tracker", key_id)
+        if record:
+            update_record("quota_tracker", key_id, {"used": 0})
+            print(f"[quota] Reset {key_id}")
+
+
 def _write_ttl_sentinel(collection: str, entity_id: str, entity_type: str):
     now = datetime.now(timezone.utc)
     set_record(collection, entity_id, {
@@ -320,6 +329,62 @@ _QUERY_FIELD = {
     "attractions": "location.city",
     "flights": "origin_state",
 }
+
+
+def refresh_all() -> dict:
+    summary = {"hotels": 0, "attractions": 0, "flights": 0, "errors": 0}
+
+    if datetime.now(timezone.utc).day == 1:
+        _reset_monthly_quota()
+
+    for entity_type in ("hotels", "attractions"):
+        for city in TREKKU_SEED["cities"]:
+            api_key, key_id = quota_tracker()
+            if api_key == "FALLBACK":
+                print(f"[refresh_all] Quota exhausted during {entity_type}. Stopping.")
+                summary["errors"] += 1
+                return summary
+            results = fetch_and_parse(city, entity_type, api_key)
+            if results:
+                _increment_quota(key_id)
+                for item in results:
+                    if not store_to_firebase(item, entity_type, entity_type, _ID_FIELD[entity_type]):
+                        summary["errors"] += 1
+                _write_ttl_sentinel(
+                    entity_type,
+                    generate_id(_ENTITY_PREFIX[entity_type], city, city),
+                    entity_type,
+                )
+                summary[entity_type] += len(results)
+                print(f"[refresh_all] {entity_type}: {len(results)} records for {city}")
+            else:
+                summary["errors"] += 1
+                print(f"[refresh_all] {entity_type}: no results for {city}")
+
+    for origin in TREKKU_SEED["flight_origins"]:
+        api_key, key_id = quota_tracker()
+        if api_key == "FALLBACK":
+            print("[refresh_all] Quota exhausted during flights. Stopping.")
+            summary["errors"] += 1
+            return summary
+        results = fetch_and_parse(origin["state"], "flights", api_key, iata=origin["iata"])
+        if results:
+            _increment_quota(key_id)
+            for item in results:
+                if not store_to_firebase(item, "flights", "flights", "flight_id"):
+                    summary["errors"] += 1
+            _write_ttl_sentinel(
+                "flights",
+                generate_id("flight", origin["state"], origin["iata"]),
+                "flights",
+            )
+            summary["flights"] += len(results)
+            print(f"[refresh_all] flights: {len(results)} records for {origin['state']}")
+        else:
+            summary["errors"] += 1
+            print(f"[refresh_all] flights: no results for {origin['state']}")
+
+    return summary
 
 
 def capture(query: str, entity_type: str, city: str = None, travel_date: str = None):
