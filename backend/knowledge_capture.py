@@ -1,5 +1,6 @@
 import hashlib
 import os
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
 import serpapi
@@ -125,6 +126,7 @@ def fetch_and_parse(query: str, entity_type: str, api_key: str, iata: str = None
                     },
                     "price_per_night": {"min": price_min, "max": price_max, "currency": "MYR"},
                     "rating": prop.get("overall_rating"),
+                    "review_count": prop.get("reviews"),   # int or None from SerpAPI
                     "amenities": prop.get("amenities", []),
                     "category": category,
                 })
@@ -159,6 +161,7 @@ def fetch_and_parse(query: str, entity_type: str, api_key: str, iata: str = None
                     "opening_hours": place.get("hours"),
                     "estimated_duration": None,
                     "popularity_score": place.get("rating", 0.0),
+                    "review_count": place.get("reviews"),  # int or None
                 })
             return results or None
 
@@ -228,6 +231,44 @@ def store_to_firebase(
         return True
     except Exception:
         return False
+
+
+def capture_rating_snapshot(records: list, entity_type: str, today_date: str) -> int:
+    captured_at = datetime.now(timezone.utc).isoformat()
+    written = 0
+
+    if entity_type == "flights":
+        city_buckets: dict = defaultdict(list)
+        for r in records:
+            city_buckets[r.get("origin_state", "")].append(r)
+        for city, flights in city_buckets.items():
+            prices = [r.get("price", 0) for r in flights if r.get("price")]
+            if not prices:
+                continue
+            entity_id = generate_id("flight", city, "selangor")
+            set_record("rating_snapshots", f"{entity_id}_{today_date}", {
+                "entity_id": entity_id, "entity_type": "flights",
+                "name": city, "city": city, "date": today_date,
+                "captured_at": captured_at, "price_min": min(prices),
+            })
+            written += 1
+    else:
+        id_field = _ID_FIELD[entity_type]
+        for r in records:
+            entity_id = r.get(id_field)
+            if not entity_id:
+                continue
+            city = (r.get("location") or {}).get("city", "")
+            rating = r.get("rating") if entity_type == "hotels" else r.get("popularity_score")
+            set_record("rating_snapshots", f"{entity_id}_{today_date}", {
+                "entity_id": entity_id, "entity_type": entity_type,
+                "name": r.get("name", ""), "city": city, "date": today_date,
+                "captured_at": captured_at, "rating": rating,
+                "review_count": r.get("review_count"),
+            })
+            written += 1
+
+    return written
 
 
 def _increment_quota(key_id: str):
@@ -332,7 +373,8 @@ _QUERY_FIELD = {
 
 
 def refresh_all() -> dict:
-    summary = {"hotels": 0, "attractions": 0, "flights": 0, "errors": 0}
+    summary = {"hotels": 0, "attractions": 0, "flights": 0, "snapshots": 0, "errors": 0}
+    today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     if datetime.now(timezone.utc).day == 1:
         _reset_monthly_quota()
@@ -355,6 +397,7 @@ def refresh_all() -> dict:
                     generate_id(_ENTITY_PREFIX[entity_type], city, city),
                     entity_type,
                 )
+                summary["snapshots"] += capture_rating_snapshot(results, entity_type, today_date)
                 summary[entity_type] += len(results)
                 print(f"[refresh_all] {entity_type}: {len(results)} records for {city}")
             else:
@@ -378,6 +421,7 @@ def refresh_all() -> dict:
                 generate_id("flight", origin["state"], origin["iata"]),
                 "flights",
             )
+            summary["snapshots"] += capture_rating_snapshot(results, "flights", today_date)
             summary["flights"] += len(results)
             print(f"[refresh_all] flights: {len(results)} records for {origin['state']}")
         else:
