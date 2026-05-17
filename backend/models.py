@@ -91,3 +91,40 @@ class QuotaTracker(BaseModel):
 class SystemFlag(BaseModel):
     seeded: bool = False
     seeded_at: Optional[str] = None
+
+
+# ─── RATING SNAPSHOTS ────────────────────────────────
+
+class RatingSnapshot(BaseModel):
+    entity_id: str
+    entity_type: str                        # "hotels" | "attractions" | "flights"
+    name: str
+    city: str
+    date: str                               # "YYYY-MM-DD"
+    captured_at: str                        # ISO 8601 UTC datetime
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    price_min: Optional[float] = None
+
+
+class TrendPoint(BaseModel):
+    date: str                               # "YYYY-MM-DD"
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    price_min: Optional[float] = None
+
+
+class TrendResponse(BaseModel):
+    entity_id: str
+    entity_type: str
+    name: str
+    city: str
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+    data: List[TrendPoint]
+
+
+class EntitySummary(BaseModel):
+    entity_id: str
+    name: str
+    city: str
