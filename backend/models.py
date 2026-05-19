@@ -128,3 +128,99 @@ class EntitySummary(BaseModel):
     entity_id: str
     name: str
     city: str
+
+
+# ─── AGENT / ITINERARY ───────────────────────────────
+
+class TripParams(BaseModel):
+    origin_state: Optional[str] = None
+    city: Optional[str] = None
+    budget: Optional[float] = None
+    days: Optional[int] = None
+    travel_date: Optional[str] = None
+    travelers: int = 1
+
+
+class ConversationTurn(BaseModel):
+    role: str           # "user" | "assistant"
+    content: str
+    timestamp: str
+
+
+class AgentSession(BaseModel):
+    session_id: str
+    created_at: str
+    updated_at: str
+    trip_params: TripParams
+    conversation: List[ConversationTurn] = []
+    last_itinerary_id: Optional[str] = None
+    status: str = "active"
+
+
+class ItineraryDay(BaseModel):
+    day: int
+    hotel: Optional[dict] = None
+    attractions: List[dict] = []
+    notes: str = ""
+
+
+class ItineraryContent(BaseModel):
+    days: List[ItineraryDay]
+    flight: Optional[dict] = None
+    total_estimated_cost: float = 0.0
+
+
+class GeneratedItinerary(BaseModel):
+    itinerary_id: str
+    session_id: str
+    created_at: str
+    city: str
+    days: int
+    budget: float
+    travel_date: Optional[str] = None
+    content: ItineraryContent
+    raw_llm_response: str = ""
+    kb_context_snapshot: str = ""
+
+
+class TacitFeedback(BaseModel):
+    feedback_id: str
+    itinerary_id: str
+    session_id: str
+    created_at: str
+    feedback_type: str   # "explicit_rating" | "explicit_text" | "implicit_modification"
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    signal: float        # -1.0 to 1.0
+    details: dict = {}
+
+
+# ─── AGENT API REQUEST / RESPONSE ────────────────────
+
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    message: str
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    reply: str
+    itinerary_id: Optional[str] = None
+    params_collected: dict
+    itinerary: Optional[dict] = None
+
+
+class FeedbackRequest(BaseModel):
+    itinerary_id: str
+    entity_id: Optional[str] = None
+    entity_type: Optional[str] = None
+    rating: Optional[int] = None   # 1-5 stars, mapped to signal
+    comment: Optional[str] = None
+    signal: float = 0.0            # direct override if rating not provided
+
+
+class ModifyRequest(BaseModel):
+    itinerary_id: str
+    original_entity_id: str
+    replacement_entity_id: str
+    entity_type: str

@@ -6,6 +6,8 @@ python-dotenv
 pydantic
 groq
 huggingface_hub
+openai
 serpapi
 pytest
 httpx
+google-adk

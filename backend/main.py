@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from routers.ratings import router as ratings_router
+from routers.agent import router as agent_router
 
 app = FastAPI(title="Trekku API")
 
@@ -12,6 +14,7 @@ app.add_middleware(
 )
 
 app.include_router(ratings_router)
+app.include_router(agent_router)
 
 
 @app.get("/health")
