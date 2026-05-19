@@ -1,6 +1,6 @@
 import os
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 from knowledge_capture import (
@@ -45,13 +45,13 @@ def test_generate_id_different_types_produce_different_ids():
 # ── ttl_checker ───────────────────────────────────────────────────────────────
 
 def test_ttl_checker_returns_fresh_for_future_expiry():
-    future = (datetime.utcnow() + timedelta(days=1)).isoformat()
+    future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     with patch("knowledge_capture.get_record", return_value={"ttl_expires": future}):
         assert ttl_checker("some_id", "hotels") == "FRESH"
 
 
 def test_ttl_checker_returns_stale_for_past_expiry():
-    past = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     with patch("knowledge_capture.get_record", return_value={"ttl_expires": past}):
         assert ttl_checker("some_id", "hotels") == "STALE"
 
@@ -96,7 +96,7 @@ def test_quota_tracker_returns_fallback_when_all_keys_exhausted():
 # ── trend_tracker ─────────────────────────────────────────────────────────────
 
 def test_trend_tracker_returns_ok_when_count_below_threshold():
-    recent = (datetime.utcnow() - timedelta(days=2)).isoformat()
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
     record = {"search_count": 5, "last_reset": recent, "last_fetched": None}
     with patch("knowledge_capture.get_record", return_value=record):
         with patch("knowledge_capture.update_record"):
@@ -104,8 +104,8 @@ def test_trend_tracker_returns_ok_when_count_below_threshold():
 
 
 def test_trend_tracker_returns_refetch_when_count_high_and_ttl_stale():
-    recent = (datetime.utcnow() - timedelta(days=2)).isoformat()
-    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    past_ttl = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     topic_record = {"search_count": 9, "last_reset": recent, "last_fetched": None}
     entity_record = {"ttl_expires": past_ttl}
 
@@ -120,8 +120,8 @@ def test_trend_tracker_returns_refetch_when_count_high_and_ttl_stale():
 
 
 def test_trend_tracker_returns_ok_when_count_high_but_ttl_fresh():
-    recent = (datetime.utcnow() - timedelta(days=2)).isoformat()
-    future_ttl = (datetime.utcnow() + timedelta(days=10)).isoformat()
+    recent = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    future_ttl = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
     topic_record = {"search_count": 9, "last_reset": recent, "last_fetched": None}
     entity_record = {"ttl_expires": future_ttl}
 
@@ -301,7 +301,7 @@ def test_store_to_firebase_returns_false_on_write_failure():
 # ── seed_database ─────────────────────────────────────────────────────────────
 
 def test_seed_database_skips_already_seeded_collection():
-    with patch("knowledge_capture.get_record", return_value={"seeded": True, "ttl_expires": (datetime.utcnow() + timedelta(days=1)).isoformat()}):
+    with patch("knowledge_capture.get_record", return_value={"seeded": True, "ttl_expires": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}):
         with patch("knowledge_capture.fetch_and_parse") as mock_fetch:
             seed_database()
     mock_fetch.assert_not_called()
@@ -361,7 +361,7 @@ def test_seed_database_seeds_attractions_by_city():
             return {"used": 100, "limit": 100}
         if doc_id == "_flags":
             if collection in ("hotels", "flights"):
-                return {"seeded": True, "ttl_expires": (datetime.utcnow() + timedelta(days=1)).isoformat()}
+                return {"seeded": True, "ttl_expires": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()}
             return None
         return None
 
@@ -383,7 +383,7 @@ def test_seed_database_seeds_attractions_by_city():
 # ── capture ───────────────────────────────────────────────────────────────────
 
 def test_capture_returns_fresh_list_with_data_freshness_flag():
-    future_ttl = (datetime.utcnow() + timedelta(days=1)).isoformat()
+    future_ttl = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
     sentinel = {"ttl_expires": future_ttl, "_ttl_sentinel": True}
     hotel_records = [
         {"hotel_id": "hotel_abc", "name": "Hotel A", "location": {"city": "KL"}},
@@ -406,7 +406,7 @@ def test_capture_returns_fresh_list_with_data_freshness_flag():
 
 
 def test_capture_returns_stale_list_when_quota_fallback():
-    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    past_ttl = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     sentinel = {"ttl_expires": past_ttl, "_ttl_sentinel": True}
     stale_records = [{"hotel_id": "hotel_abc", "name": "Test Hotel", "location": {"city": "KL"}}]
 
@@ -427,7 +427,7 @@ def test_capture_returns_stale_list_when_quota_fallback():
 
 
 def test_capture_returns_none_when_fallback_and_no_firebase_record():
-    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    past_ttl = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     sentinel = {"ttl_expires": past_ttl, "_ttl_sentinel": True}
 
     def get_record_side(collection, doc_id):
@@ -446,7 +446,7 @@ def test_capture_returns_none_when_fallback_and_no_firebase_record():
 
 
 def test_capture_calls_fetch_and_parse_when_ttl_is_stale():
-    past_ttl = (datetime.utcnow() - timedelta(days=1)).isoformat()
+    past_ttl = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     sentinel = {"ttl_expires": past_ttl, "_ttl_sentinel": True}
 
     def get_record_side(collection, doc_id):

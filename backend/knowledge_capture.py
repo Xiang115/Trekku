@@ -51,7 +51,7 @@ def ttl_checker(entity_id: str, collection: str) -> str:
     if record is None:
         return "NOT_FOUND"
     ttl_expires = datetime.fromisoformat(record["ttl_expires"])
-    if datetime.utcnow() > ttl_expires:
+    if datetime.now(timezone.utc) > ttl_expires:
         return "STALE"
     return "FRESH"
 
@@ -70,7 +70,7 @@ def trend_tracker(topic_name: str, entity_id: str, collection: str) -> str:
     if record is None:
         set_record("trending_topics", topic_name, {
             "search_count": 1,
-            "last_reset": datetime.utcnow().isoformat(),
+            "last_reset": datetime.now(timezone.utc).isoformat(),
             "last_fetched": None,
         })
         return "OK"
@@ -79,7 +79,7 @@ def trend_tracker(topic_name: str, entity_id: str, collection: str) -> str:
     update_record("trending_topics", topic_name, {"search_count": new_count})
 
     last_reset = datetime.fromisoformat(record["last_reset"])
-    within_7_days = (datetime.utcnow() - last_reset) <= timedelta(days=7)
+    within_7_days = (datetime.now(timezone.utc) - last_reset) <= timedelta(days=7)
 
     if new_count >= 10 and within_7_days:
         if ttl_checker(entity_id, collection) in ("STALE", "NOT_FOUND"):
