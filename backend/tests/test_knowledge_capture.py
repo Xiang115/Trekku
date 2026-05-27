@@ -93,6 +93,15 @@ def test_quota_tracker_returns_fallback_when_all_keys_exhausted():
     assert key_id is None
 
 
+def test_quota_tracker_skips_record_with_empty_env_var_and_returns_fallback():
+    """Stale Firestore record exists for a key whose GitHub secret was removed."""
+    with patch("knowledge_capture.get_record", return_value={"used": 0, "limit": 100}):
+        with patch.dict(os.environ, {"SERPAPI_KEY_1": ""}, clear=False):
+            api_key, key_id = quota_tracker()
+    assert api_key == "FALLBACK"
+    assert key_id is None
+
+
 # ── trend_tracker ─────────────────────────────────────────────────────────────
 
 def test_trend_tracker_returns_ok_when_count_below_threshold():
@@ -482,7 +491,9 @@ def test_reset_monthly_quota_zeroes_used_for_all_active_keys():
 
     assert mock_update.call_count == 5
     for call in mock_update.call_args_list:
-        assert call.args[2] == {"used": 0}
+        update_fields = call.args[2]
+        assert update_fields["used"] == 0
+        assert update_fields["reset_date"].endswith("-01")  # always first of the month
 
 
 def test_reset_monthly_quota_skips_keys_with_no_record():
@@ -497,7 +508,9 @@ def test_reset_monthly_quota_skips_keys_with_no_record():
 
     assert mock_update.call_count == 1
     assert mock_update.call_args.args[1] == "key_1"
-    assert mock_update.call_args.args[2] == {"used": 0}
+    update_fields = mock_update.call_args.args[2]
+    assert update_fields["used"] == 0
+    assert update_fields["reset_date"].endswith("-01")
 
 
 # ── refresh_all ───────────────────────────────────────────────────────────────

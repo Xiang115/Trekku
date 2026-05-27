@@ -61,7 +61,9 @@ def quota_tracker():
         key_id = f"key_{i}"
         record = get_record("quota_tracker", key_id)
         if record and record["used"] < record["limit"]:
-            return (os.getenv(f"SERPAPI_KEY_{i}"), key_id)
+            key_value = os.getenv(f"SERPAPI_KEY_{i}")
+            if key_value:
+                return (key_value, key_id)
     return ("FALLBACK", None)
 
 
@@ -296,12 +298,16 @@ def _increment_quota(key_id: str):
 
 
 def _reset_monthly_quota() -> None:
+    now = datetime.now(timezone.utc)
+    next_month = now.month % 12 + 1
+    next_year = now.year + (1 if now.month == 12 else 0)
+    next_reset_date = f"{next_year}-{next_month:02d}-01"
     for i in range(1, 6):
         key_id = f"key_{i}"
         record = get_record("quota_tracker", key_id)
         if record:
-            update_record("quota_tracker", key_id, {"used": 0})
-            print(f"[quota] Reset {key_id}")
+            update_record("quota_tracker", key_id, {"used": 0, "reset_date": next_reset_date})
+            print(f"[quota] Reset {key_id} — next reset {next_reset_date}")
 
 
 def _write_ttl_sentinel(collection: str, entity_id: str, entity_type: str):
