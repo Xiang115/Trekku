@@ -80,7 +80,7 @@ def test_quota_tracker_skips_exhausted_key1_and_returns_key2():
         return {"used": 100, "limit": 100}
 
     with patch("knowledge_capture.get_record", side_effect=get_record_side):
-        with patch.dict(os.environ, {"SERPAPI_KEY_2": "test_key_2"}):
+        with patch.dict(os.environ, {"SERPAPI_KEY_1": "test_key_1", "SERPAPI_KEY_2": "test_key_2"}):
             api_key, key_id = quota_tracker()
     assert api_key == "test_key_2"
     assert key_id == "key_2"
@@ -88,18 +88,41 @@ def test_quota_tracker_skips_exhausted_key1_and_returns_key2():
 
 def test_quota_tracker_returns_fallback_when_all_keys_exhausted():
     with patch("knowledge_capture.get_record", return_value={"used": 100, "limit": 100}):
-        api_key, key_id = quota_tracker()
-    assert api_key == "FALLBACK"
-    assert key_id is None
-
-
-def test_quota_tracker_skips_record_with_empty_env_var_and_returns_fallback():
-    """Stale Firestore record exists for a key whose GitHub secret was removed."""
-    with patch("knowledge_capture.get_record", return_value={"used": 0, "limit": 100}):
-        with patch.dict(os.environ, {"SERPAPI_KEY_1": ""}, clear=False):
+        with patch.dict(os.environ, {"SERPAPI_KEY_1": "test_key_1"}):
             api_key, key_id = quota_tracker()
     assert api_key == "FALLBACK"
     assert key_id is None
+
+
+def test_quota_tracker_skips_key_with_empty_env_var():
+    """Stale Firestore record exists for a key whose GitHub secret was removed."""
+    def get_record_side(collection, doc_id):
+        if doc_id == "key_2":
+            return {"used": 0, "limit": 250}
+        return None
+
+    with patch("knowledge_capture.get_record", side_effect=get_record_side), \
+         patch("knowledge_capture.set_record"):
+        with patch.dict(os.environ, {"SERPAPI_KEY_1": "", "SERPAPI_KEY_2": "real_key_2"}):
+            api_key, key_id = quota_tracker()
+    assert api_key == "real_key_2"
+    assert key_id == "key_2"
+
+
+def test_quota_tracker_auto_initialises_missing_record():
+    """If a key has a valid env var but no Firestore record, it creates one and returns the key."""
+    with patch("knowledge_capture.get_record", return_value=None) as mock_get, \
+         patch("knowledge_capture.set_record") as mock_set:
+        with patch.dict(os.environ, {"SERPAPI_KEY_1": "auto_key"}):
+            api_key, key_id = quota_tracker()
+
+    assert api_key == "auto_key"
+    assert key_id == "key_1"
+    mock_set.assert_called_once()
+    created = mock_set.call_args.args[2]
+    assert created["used"] == 0
+    assert created["limit"] == 250
+    assert created["reset_date"].endswith("-01")
 
 
 # ── trend_tracker ─────────────────────────────────────────────────────────────

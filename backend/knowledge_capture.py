@@ -57,13 +57,28 @@ def ttl_checker(entity_id: str, collection: str) -> str:
 
 
 def quota_tracker():
+    now = datetime.now(timezone.utc)
+    next_month = now.month % 12 + 1
+    next_year = now.year + (1 if now.month == 12 else 0)
+    next_reset = f"{next_year}-{next_month:02d}-01"
+
     for i in range(1, 6):
+        key_value = os.getenv(f"SERPAPI_KEY_{i}")
+        if not key_value:
+            continue
         key_id = f"key_{i}"
         record = get_record("quota_tracker", key_id)
-        if record and record["used"] < record["limit"]:
-            key_value = os.getenv(f"SERPAPI_KEY_{i}")
-            if key_value:
-                return (key_value, key_id)
+        if record is None:
+            set_record("quota_tracker", key_id, {
+                "key_id": key_id,
+                "used": 0,
+                "limit": 250,
+                "reset_date": next_reset,
+            })
+            print(f"[quota] Auto-initialised record for {key_id}")
+            return (key_value, key_id)
+        if record["used"] < record["limit"]:
+            return (key_value, key_id)
     return ("FALLBACK", None)
 
 
