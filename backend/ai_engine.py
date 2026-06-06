@@ -1,11 +1,19 @@
 import json
 import re
+import time
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 from config import GROQ_API_KEY, HUGGINGFACE_API_KEY, OPENROUTER_API_KEY
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-120b"
+
+# Groq's free tier returns 429 (rate limit) or 413 (single request exceeds the
+# per-minute token budget). Both clear once the rolling-minute window resets, so
+# they are worth retrying with backoff. Mirrors the async path in agent.py.
+_RETRYABLE_STATUS = (429, 413)
+_MAX_LLM_RETRIES = 3
+_RETRY_BASE_DELAY = 2.0  # seconds; doubled each attempt
 
 _client: OpenAI | None = None
 
@@ -33,12 +41,19 @@ def call_llm(system_prompt: str, history: list, user_message: str) -> str:
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    response = _get_client().chat.completions.create(
-        model=MODEL,
-        messages=messages,
-        temperature=0.7,
-    )
-    return response.choices[0].message.content or ""
+    for attempt in range(_MAX_LLM_RETRIES):
+        try:
+            response = _get_client().chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                temperature=0.7,
+            )
+            return response.choices[0].message.content or ""
+        except APIStatusError as exc:
+            retryable = getattr(exc, "status_code", None) in _RETRYABLE_STATUS
+            if not retryable or attempt == _MAX_LLM_RETRIES - 1:
+                raise
+            time.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
 
 
 def extract_params_from_message(user_message: str, current_params: dict) -> dict:
@@ -66,7 +81,13 @@ def extract_params_from_message(user_message: str, current_params: dict) -> dict
     )
     context = f"current_params: {json.dumps(current_params)}\nuser_message: {user_message}"
 
-    raw = call_llm(system, [], context)
+    # Best-effort: if the LLM is rate-limited or otherwise unavailable, keep the
+    # params we already have rather than crashing the whole chat response. The
+    # tool loop already captures city/days/budget via save_itinerary.
+    try:
+        raw = call_llm(system, [], context)
+    except APIStatusError:
+        return dict(current_params)
 
     try:
         cleaned = re.sub(r"```(?:json)?|```", "", raw).strip()
@@ -104,6 +125,7 @@ def build_itinerary_system_prompt(trip_params: dict, kb_context: str, feedback_n
         + (f"The traveller is flying from {origin} to {city}. " if origin else "")
         + "Use ONLY hotels, attractions, and flights from the knowledge base provided below. "
         "Distribute attractions across days naturally. "
+        "Estimate whole-trip meals (~MYR 60-120/traveller/day) and local transport (~MYR 30-60/day). "
         "Ensure the total_estimated_cost fits within the budget. "
         "Return ONLY valid JSON with this exact structure:\n"
         "{\n"
@@ -116,6 +138,8 @@ def build_itinerary_system_prompt(trip_params: dict, kb_context: str, feedback_n
         "    }\n"
         "  ],\n"
         '  "flight": {"flight_id": "...", "airline": "...", "flight_number": "...", "price": 0.0} or null,\n'
+        '  "estimated_meals_cost": 0.0,\n'
+        '  "estimated_transport_cost": 0.0,\n'
         '  "total_estimated_cost": 0.0\n'
         "}\n\n"
         f"Knowledge base:\n{kb_context}\n\n"

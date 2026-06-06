@@ -128,6 +128,9 @@ class EntitySummary(BaseModel):
     entity_id: str
     name: str
     city: str
+    # Representative price for swap previews: hotel nightly midpoint, flight fare,
+    # or None for attractions (which carry no price in the knowledge base).
+    price: Optional[float] = None
 
 
 # ─── AGENT / ITINERARY ───────────────────────────────
@@ -167,6 +170,9 @@ class ItineraryDay(BaseModel):
 class ItineraryContent(BaseModel):
     days: List[ItineraryDay]
     flight: Optional[dict] = None
+    # AI-estimated whole-trip costs the knowledge base can't price deterministically.
+    estimated_meals_cost: float = 0.0
+    estimated_transport_cost: float = 0.0
     total_estimated_cost: float = 0.0
 
 

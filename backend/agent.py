@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI, APIStatusError, BadRequestError
 
 from config import GROQ_API_KEY
 from database import get_record, set_record, query_records
@@ -34,6 +34,77 @@ _ENTITY_ID_FIELD = {
 _current_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "session_id", default=""
 )
+
+# Snapshot of the collected trip params for the current request, so the tool loop
+# can gate planning tools on completeness without changing its signature (mirrors
+# the _current_session_id pattern used by save_itinerary/update_knowledge_base).
+_current_trip_params: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "trip_params", default={}
+)
+
+# Optional per-request progress sink. The SSE endpoint sets this to an asyncio.Queue
+# so the agent can stream its real processing state to the client; on the plain
+# /agent/chat path (and in tests) it stays None and every emit is a no-op. Same
+# ContextVar trick as above — keeps chat_async/_run_tool_loop signatures untouched.
+_progress_queue: contextvars.ContextVar["asyncio.Queue | None"] = contextvars.ContextVar(
+    "progress_queue", default=None
+)
+
+
+def emit_progress(stage: str, **extra) -> None:
+    """Push a progress event onto the current request's queue, if one is set.
+
+    No-op when no emitter is active (plain /agent/chat, sync chat(), tests). Uses
+    put_nowait on an unbounded queue so emitting is sync and never blocks the agent.
+    """
+    q = _progress_queue.get()
+    if q is None:
+        return
+    q.put_nowait({"stage": stage, **extra})
+
+# The agent may not start planning until all of these are known. origin_state and
+# travel_date stay optional (origin only drives flight search); travelers defaults to 1.
+REQUIRED_PARAMS = ("city", "budget", "days")
+
+
+def _missing_required(trip_params: dict) -> list[str]:
+    """Return the REQUIRED_PARAMS that are still absent/falsy in trip_params."""
+    return [k for k in REQUIRED_PARAMS if not trip_params.get(k)]
+
+
+def _render_collected_state(trip_params: dict) -> str:
+    """Build the system-prompt block that shows the model what is known vs. missing.
+
+    Injecting this each turn gives the model an explicit checklist instead of forcing
+    it to re-infer completeness from the raw conversation, which is the main source of
+    its inconsistent ask-vs-plan behaviour.
+    """
+    fields = ("city", "budget", "days", "origin_state", "travel_date", "travelers")
+    lines = []
+    for key in fields:
+        val = trip_params.get(key)
+        required = key in REQUIRED_PARAMS
+        if val in (None, ""):
+            shown = "(missing, REQUIRED)" if required else "(missing, optional)"
+        else:
+            shown = str(val)
+        lines.append(f"- {key}: {shown}")
+
+    missing = _missing_required(trip_params)
+    if missing:
+        rule = (
+            f"You are STILL MISSING required detail(s): {', '.join(missing)}. "
+            "You MUST NOT call search_hotels, search_attractions, search_flights, or "
+            "save_itinerary yet. Ask the user for the missing required detail(s) first, "
+            "in a warm and natural way."
+        )
+    else:
+        rule = (
+            "All required details are collected. You may now call the search tools and "
+            "build the itinerary."
+        )
+
+    return "TRIP DETAILS COLLECTED SO FAR:\n" + "\n".join(lines) + "\n\n" + rule
 
 
 def _now_iso() -> str:
@@ -69,10 +140,20 @@ def get_session(session_id: str) -> dict | None:
 
 def _compact_hotel(h: dict) -> dict:
     ppn = h.get("price_per_night") or {}
+    if isinstance(ppn, dict):
+        pmin = ppn.get("min", 0) or 0
+        pmax = ppn.get("max", pmin) or pmin
+    else:
+        pmin = pmax = ppn or 0
+    # Use the midpoint as the representative nightly rate so the model and the user
+    # see a realistic figure instead of the misleading floor of the range.
+    representative = round((pmin + pmax) / 2)
     return {
         "hotel_id": h.get("hotel_id", ""),
         "name": h.get("name", ""),
-        "price_per_night": ppn.get("min", 0) if isinstance(ppn, dict) else ppn,
+        "price_per_night": representative,
+        "price_per_night_min": pmin,
+        "price_per_night_max": pmax,
         "rating": h.get("rating"),
         "category": h.get("category", ""),
         "amenities": h.get("amenities", [])[:5],
@@ -196,12 +277,15 @@ AVAILABLE DESTINATION CITIES:
 INITIAL PLANNING WORKFLOW:
 1. Greet the user and understand their travel intent through natural conversation.
 2. Collect these trip details (ask naturally if missing):
-   - Destination city (must be one of the cities above; KL=Kuala Lumpur, PJ=Petaling Jaya, BB=Bukit Bintang)
-   - Total budget in MYR
-   - Number of days
+   - Destination city (must be one of the cities above; KL=Kuala Lumpur, PJ=Petaling Jaya, BB=Bukit Bintang) [REQUIRED]
+   - Total budget in MYR [REQUIRED]
+   - Number of days [REQUIRED]
    - Origin state/city (optional, for flight search)
    - Travel date (optional)
-3. Once you know the city, call search_hotels and search_attractions.
+   GATE: You MUST have the destination city, budget, AND number of days before you start
+   planning. While any of these three is missing, do NOT call search_hotels, search_attractions,
+   search_flights, or save_itinerary — ask the user for the missing detail(s) instead.
+3. Once you have the destination city, budget, AND number of days, call search_hotels and search_attractions.
 4. If the user mentioned an origin state, call search_flights.
 5. Plan a complete day-by-day itinerary within the user's budget using ONLY results from your tool calls.
 6. Call save_itinerary with the complete structured itinerary JSON.
@@ -231,9 +315,28 @@ TIME PLANNING PER DAY:
 - Spread attractions across days so each day feels full but not rushed.
 
 ITINERARY JSON FORMAT for save_itinerary (itinerary_json parameter):
-{{"days":[{{"day":1,"hotel":{{"hotel_id":"...","name":"...","price_per_night":0.0}},"attractions":[{{"attraction_id":"...","name":"...","estimated_duration":"..."}}],"notes":"..."}}],"flight":{{"flight_id":"...","airline":"...","flight_number":"...","price":0.0}},"total_estimated_cost":0.0}}
+{{"days":[{{"day":1,"hotel":{{"hotel_id":"...","name":"...","price_per_night":0.0}},"attractions":[{{"attraction_id":"...","name":"...","estimated_duration":"..."}}],"notes":"..."}}],"flight":{{"flight_id":"...","airline":"...","flight_number":"...","price":0.0}},"estimated_meals_cost":0.0,"estimated_transport_cost":0.0,"total_estimated_cost":0.0}}
 
-Set "flight" to null if no flight search was done. Ensure total_estimated_cost fits within the user's stated budget.
+Set "flight" to null if no flight search was done.
+
+PRICING RULES (follow exactly):
+- When stating a hotel's nightly rate, copy the "price_per_night" value from the search_hotels
+  result verbatim. Never use price_per_night_min (the floor of the range) and never invent a number.
+- In the itinerary_json you pass to save_itinerary, set every hotel/flight price to the value from the
+  search results and set total_estimated_cost to 0. save_itinerary re-resolves hotel and flight prices
+  from the database and returns the authoritative {{total_estimated_cost, currency}}.
+- The knowledge base has NO prices for meals or local transport, so YOU must estimate them for the
+  whole trip and put MYR figures in "estimated_meals_cost" and "estimated_transport_cost". Base meals on
+  roughly MYR 60-120 per traveller per day and transport on MYR 30-60 per day (more for far attractions,
+  multiply by the number of travellers and days). These estimates ARE counted in the returned total.
+- Flights and hotels are priced PER PERSON / PER ROOM: save_itinerary multiplies them by the number of
+  travellers when computing the total. Do NOT pre-multiply hotel or flight prices yourself — always pass
+  the single per-night / per-fare value from the search results.
+- In your reply to the user, quote the total_estimated_cost returned by save_itinerary exactly.
+  Do NOT state your own total. Choose hotels, nights and estimates so the returned total fits the budget.
+- Do NOT compute or present your own cost breakdown, per-item price table, or arithmetic (e.g. "2 x RM 153
+  = RM 306"). Your free-form maths will not match the authoritative figures the UI shows and will confuse
+  the user. Mention the single grand total only; let the itinerary card display the per-item costs.
 
 FEEDBACK LOOP:
 - When the user expresses a like or dislike about a specific hotel, attraction, or flight,
@@ -250,15 +353,22 @@ Be warm, conversational, and helpful. Ask natural follow-up questions if details
 
 # ─── TOOL FUNCTIONS ───────────────────────────────────────────────────────────
 
+# Reranking already orders by relevance + feedback, so returning only the top slice
+# keeps the best candidates while bounding the tokens fed back into the agent request.
+# Groq's free tier caps requests at 8000 tokens/min; three uncapped city searches blow
+# past that on their own. Attractions stay generous enough to fill a multi-day plan.
+_SEARCH_RESULT_CAP = {"hotels": 8, "attractions": 18, "flights": 6}
+
+
 def search_hotels(city: str) -> str:
     records = query_records("hotels", "location.city", "==", city)
-    ranked = apply_feedback_reranking(records, "hotels")
+    ranked = apply_feedback_reranking(records, "hotels")[: _SEARCH_RESULT_CAP["hotels"]]
     return json.dumps([_compact_hotel(h) for h in ranked], ensure_ascii=False)
 
 
 def search_attractions(city: str) -> str:
     records = query_records("attractions", "location.city", "==", city)
-    ranked = apply_feedback_reranking(records, "attractions")
+    ranked = apply_feedback_reranking(records, "attractions")[: _SEARCH_RESULT_CAP["attractions"]]
     return json.dumps([_compact_attraction(a) for a in ranked], ensure_ascii=False)
 
 
@@ -267,8 +377,71 @@ def search_flights(origin_state: str) -> str:
     if not iata:
         return json.dumps([])
     records = query_records("flights", "origin_iata", "==", iata)
-    ranked = apply_feedback_reranking(records, "flights")
+    ranked = apply_feedback_reranking(records, "flights")[: _SEARCH_RESULT_CAP["flights"]]
     return json.dumps([_compact_flight(f) for f in ranked], ensure_ascii=False)
+
+
+def _calculate_total_cost(content: dict, travelers: int = 1) -> float:
+    """Deterministically total the cost of an itinerary from its line items.
+
+    Sums each listed day's hotel nightly rate, any attraction prices, and the
+    flight price (all priced deterministically from the knowledge base), then adds
+    the AI-estimated meals and transport costs. This makes the displayed total equal
+    the sum of the displayed items, rather than trusting the model's free-form estimate.
+
+    Flights and hotels are per-person/per-room bookables, so they scale with the party
+    size. Meals and transport are NOT scaled here: the model already sizes those
+    whole-trip estimates for the full party (see PRICING RULES in the system prompt).
+    """
+    party = max(int(travelers or 1), 1)
+    total = 0.0
+    for day in content.get("days") or []:
+        hotel = day.get("hotel") or {}
+        total += float(hotel.get("price_per_night") or 0) * party
+        for attraction in day.get("attractions") or []:
+            # Attractions carry no price today; read defensively for future data.
+            total += float(attraction.get("price") or attraction.get("entry_fee") or 0)
+    flight = content.get("flight") or {}
+    total += float(flight.get("price") or 0) * party
+    # Meals and transport have no knowledge-base price, so the model estimates them
+    # for the whole party already — do not scale again.
+    total += float(content.get("estimated_meals_cost") or 0)
+    total += float(content.get("estimated_transport_cost") or 0)
+    return round(total, 2)
+
+
+def _resolve_prices_from_db(content: dict) -> None:
+    """Overwrite model-emitted prices in-place with authoritative values from the DB.
+
+    The model relays prices as free text and may fabricate them, so we re-resolve each
+    hotel and flight by its ID. Hotels use the midpoint of the stored {min, max} range
+    as the representative nightly rate. Entities that can't be resolved keep whatever the
+    model supplied, so the function degrades gracefully.
+    """
+    for day in content.get("days") or []:
+        hotel = day.get("hotel") or {}
+        hotel_id = hotel.get("hotel_id")
+        if not hotel_id:
+            continue
+        record = get_record("hotels", hotel_id)
+        if not record:
+            continue
+        ppn = record.get("price_per_night") or {}
+        if isinstance(ppn, dict):
+            pmin = ppn.get("min", 0) or 0
+            pmax = ppn.get("max", pmin) or pmin
+            hotel["price_per_night"] = round((pmin + pmax) / 2)
+            hotel["price_per_night_min"] = pmin
+            hotel["price_per_night_max"] = pmax
+        elif ppn:
+            hotel["price_per_night"] = ppn
+
+    flight = content.get("flight") or {}
+    flight_id = flight.get("flight_id") if isinstance(flight, dict) else None
+    if flight_id:
+        record = get_record("flights", flight_id)
+        if record and record.get("price") is not None:
+            flight["price"] = record["price"]
 
 
 def save_itinerary(
@@ -282,9 +455,24 @@ def save_itinerary(
         content = json.loads(itinerary_json)
         content.setdefault("days", [])
         content.setdefault("flight", None)
-        content.setdefault("total_estimated_cost", 0.0)
+        # Meals/transport are AI estimates with no DB source; keep them, defaulting to 0.
+        content["estimated_meals_cost"] = float(content.get("estimated_meals_cost") or 0)
+        content["estimated_transport_cost"] = float(content.get("estimated_transport_cost") or 0)
+        # Re-resolve prices from the DB, then compute the total from those authoritative
+        # values — never trust the model's free-form prices or estimate.
+        _resolve_prices_from_db(content)
+        # Travellers drive how many flight fares / hotel rooms the total covers.
+        travelers = _current_trip_params.get({}).get("travelers") or 1
+        content["total_estimated_cost"] = _calculate_total_cost(content, travelers)
     except (json.JSONDecodeError, ValueError):
-        content = {"days": [], "flight": None, "total_estimated_cost": 0.0, "parse_error": True}
+        content = {
+            "days": [],
+            "flight": None,
+            "estimated_meals_cost": 0.0,
+            "estimated_transport_cost": 0.0,
+            "total_estimated_cost": 0.0,
+            "parse_error": True,
+        }
 
     itinerary_id = str(uuid.uuid4())
     set_record("generated_itineraries", itinerary_id, {
@@ -299,7 +487,12 @@ def save_itinerary(
         "raw_llm_response": itinerary_json,
         "kb_context_snapshot": "",
     })
-    return json.dumps({"itinerary_id": itinerary_id, "status": "saved"})
+    return json.dumps({
+        "itinerary_id": itinerary_id,
+        "status": "saved",
+        "total_estimated_cost": content.get("total_estimated_cost", 0.0),
+        "currency": "MYR",
+    })
 
 
 def update_knowledge_base(
@@ -435,6 +628,13 @@ _TOOLS_REGISTRY = {
     "update_knowledge_base": update_knowledge_base,
 }
 
+# Planning tools that must not run until all REQUIRED_PARAMS are collected. The loop
+# blocks these and returns an error result so the model asks the user first instead of
+# fabricating an itinerary from incomplete details. update_knowledge_base is NOT gated.
+_GATED_TOOLS = frozenset(
+    {"search_hotels", "search_attractions", "search_flights", "save_itinerary"}
+)
+
 
 # ─── ASYNC GROQ CLIENT ────────────────────────────────────────────────────────
 
@@ -451,7 +651,54 @@ def _get_async_client() -> AsyncOpenAI:
     return _async_client
 
 
+# ─── RETRY + PAYLOAD HELPERS ──────────────────────────────────────────────────
+
+# Groq's free tier returns 429 (rate limit) or 413 (single request exceeds the
+# per-minute token budget). Both clear once the rolling-minute window resets, so
+# they are worth retrying with backoff.
+_RETRYABLE_STATUS = (429, 413)
+_MAX_LLM_RETRIES = 3
+_RETRY_BASE_DELAY = 2.0  # seconds; doubled each attempt
+
+# Cap each tool result before feeding it back into the next request so the
+# growing message list stays well under the per-minute token limit. Search tools
+# already cap their record counts; this is a backstop for any unexpectedly large result.
+_TOOL_RESULT_CHAR_LIMIT = 2500
+
+
+def _truncate_tool_result(result: str, limit: int = _TOOL_RESULT_CHAR_LIMIT) -> str:
+    """Trim oversized tool output so it doesn't blow up the request token count."""
+    if len(result) <= limit:
+        return result
+    return result[:limit] + "\n...[truncated]"
+
+
+async def _create_completion(client: AsyncOpenAI, **kwargs):
+    """Call Groq chat completion, retrying transient rate-limit/too-large errors
+    with exponential backoff. Re-raises after _MAX_LLM_RETRIES attempts or on any
+    non-retryable error."""
+    for attempt in range(_MAX_LLM_RETRIES):
+        try:
+            return await client.chat.completions.create(**kwargs)
+        except APIStatusError as exc:
+            retryable = getattr(exc, "status_code", None) in _RETRYABLE_STATUS
+            if not retryable or attempt == _MAX_LLM_RETRIES - 1:
+                raise
+            await asyncio.sleep(_RETRY_BASE_DELAY * (2 ** attempt))
+
+
 # ─── TOOL-CALLING AGENT LOOP ──────────────────────────────────────────────────
+
+# Maps each tool to the semantic progress stage shown while it runs. The frontend
+# owns the user-facing wording; the backend only emits stable stage ids + detail.
+_TOOL_STAGE = {
+    "search_flights": "searching_flights",
+    "search_hotels": "searching_hotels",
+    "search_attractions": "searching_attractions",
+    "save_itinerary": "finalizing",
+    "update_knowledge_base": "learning",
+}
+
 
 async def _run_tool_loop(messages: list) -> tuple[str, str | None, dict]:
     """
@@ -464,25 +711,34 @@ async def _run_tool_loop(messages: list) -> tuple[str, str | None, dict]:
     itinerary_id = None
     saved_params: dict = {}
 
+    # Low temperature keeps the ask-vs-plan routing decision consistent across runs;
+    # the gate (above) is the hard guarantee, this reduces drift. Bumped on retry
+    # (see the tool_use_failed handler) to break a stuck malformed generation.
+    temperature = 0.3
+
     for iteration in range(10):  # cap iterations to prevent runaway loops
+        emit_progress("thinking", step=iteration + 1)
         try:
-            response = await client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+            response = await _create_completion(
+                client,
+                model="openai/gpt-oss-120b",
                 messages=messages,
                 tools=_TOOLS_SCHEMA,
                 tool_choice="auto",
-                temperature=0.7,
+                temperature=temperature,
             )
         except BadRequestError as exc:
-            if "tool_use_failed" in str(exc) and iteration < 9:
-                # Model generated malformed tool call syntax; retry with tools disabled
-                # to get a plain text response rather than crashing
-                fallback = await client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=messages,
-                    temperature=0.7,
-                )
-                return fallback.choices[0].message.content or "", itinerary_id, saved_params
+            # gpt-oss occasionally emits a malformed tool call ("tool_use_failed").
+            # It almost always recovers on retry, so re-issue the SAME tools-enabled
+            # request with a higher temperature to break the bad generation. Do NOT
+            # retry with tools stripped: the model still tries to call save_itinerary
+            # (the system prompt mandates it) and Groq then rejects the request with
+            # "tool_choice is none, but model called a tool", crashing the turn.
+            # If it never recovers, the loop exhausts and returns the graceful
+            # message below rather than surfacing a 400 to the caller.
+            if "tool_use_failed" in str(exc):
+                temperature = 0.7
+                continue
             raise
 
         choice = response.choices[0]
@@ -515,6 +771,34 @@ async def _run_tool_loop(messages: list) -> tuple[str, str | None, dict]:
                 except (json.JSONDecodeError, ValueError):
                     fn_args = {}
 
+                # Surface the real tool the agent is running (with the relevant target,
+                # e.g. the city) before the slow call, so the UI reflects current state.
+                stage = _TOOL_STAGE.get(fn_name)
+                if stage:
+                    detail = (
+                        fn_args.get("city")
+                        or fn_args.get("origin_state")
+                        or fn_args.get("iata")
+                    )
+                    emit_progress(stage, tool=fn_name, detail=detail, step=iteration + 1)
+
+                missing = _missing_required(_current_trip_params.get())
+                if fn_name in _GATED_TOOLS and missing:
+                    # Required trip details are incomplete — refuse to plan and tell the
+                    # model to ask the user first, rather than fabricating an itinerary.
+                    result = json.dumps({
+                        "error": "missing_required_params",
+                        "missing": missing,
+                        "message": "Ask the user for these details before planning; "
+                                   "do not call planning tools yet.",
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": _truncate_tool_result(result),
+                    })
+                    continue
+
                 fn = _TOOLS_REGISTRY.get(fn_name)
                 if fn:
                     try:
@@ -540,7 +824,7 @@ async def _run_tool_loop(messages: list) -> tuple[str, str | None, dict]:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": result,
+                    "content": _truncate_tool_result(result),
                 })
 
         else:
@@ -565,25 +849,33 @@ async def chat_async(session_id: str | None, user_message: str) -> dict:
 
     _current_session_id.set(session["session_id"])
 
-    # Build OpenAI-format messages from session history (last 12 turns)
-    messages = [{"role": "system", "content": TREKKU_SYSTEM_PROMPT}]
-    for turn in session["conversation"][-12:]:
+    # Extract params from the new message BEFORE planning so the model sees an up-to-date
+    # checklist and the gate has current state. (This call happened post-loop before; moving
+    # it earlier costs nothing extra and is what makes the ask-vs-plan gate reliable.)
+    emit_progress("understanding")
+    extracted = extract_params_from_message(user_message, session["trip_params"])
+    for key in ("city", "budget", "days", "origin_state", "travel_date", "travelers"):
+        if extracted.get(key) is not None:
+            session["trip_params"][key] = extracted[key]
+    _current_trip_params.set(session["trip_params"])
+
+    # Build OpenAI-format messages from session history. Keep the window small —
+    # the in-loop tool turns add a lot on top, and Groq's free tier caps requests
+    # at 8k tokens/min, so a smaller history keeps us under the limit. Inject the
+    # collected-state checklist so the model knows exactly what is still missing.
+    system_content = TREKKU_SYSTEM_PROMPT + "\n\n" + _render_collected_state(session["trip_params"])
+    messages = [{"role": "system", "content": system_content}]
+    for turn in session["conversation"][-6:]:
         if turn["role"] in ("user", "assistant"):
             messages.append({"role": turn["role"], "content": turn["content"]})
 
     final_reply, itinerary_id, saved_params = await _run_tool_loop(messages)
 
-    # Update trip_params from save_itinerary args (authoritative for city/days/budget/travel_date)
+    # save_itinerary args are authoritative for city/days/budget/travel_date — apply last.
     if saved_params:
         for key, val in saved_params.items():
             if val is not None:
                 session["trip_params"][key] = val
-
-    # Supplement with message extraction for origin_state and travelers
-    extracted = extract_params_from_message(user_message, session["trip_params"])
-    for key in ("origin_state", "travelers"):
-        if extracted.get(key) is not None:
-            session["trip_params"][key] = extracted[key]
 
     if itinerary_id:
         session["last_itinerary_id"] = itinerary_id

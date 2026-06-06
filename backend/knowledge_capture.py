@@ -402,7 +402,7 @@ def seed_database():
 
 
 def refresh_all() -> dict:
-    summary = {"hotels": 0, "attractions": 0, "flights": 0, "snapshots": 0, "errors": 0}
+    summary = {"hotels": 0, "attractions": 0, "flights": 0, "snapshots": 0, "empty": 0, "errors": 0}
     today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     if datetime.now(timezone.utc).day == 1:
@@ -433,7 +433,7 @@ def refresh_all() -> dict:
                 summary[entity_type] += len(results)
                 print(f"[refresh_all] {entity_type}: {len(results)} records for {city}")
             else:
-                summary["errors"] += 1
+                summary["empty"] += 1
                 print(f"[refresh_all] {entity_type}: no results for {city}")
 
     for origin in TREKKU_SEED["flight_origins"]:
@@ -460,7 +460,7 @@ def refresh_all() -> dict:
             summary["flights"] += len(results)
             print(f"[refresh_all] flights: {len(results)} records for {origin['state']}")
         else:
-            summary["errors"] += 1
+            summary["empty"] += 1
             print(f"[refresh_all] flights: no results for {origin['state']}")
 
     return summary

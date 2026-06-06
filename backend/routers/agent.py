@@ -1,7 +1,10 @@
+import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 import agent as agent_module
 from database import get_record, set_record
@@ -18,6 +21,64 @@ def _now_iso() -> str:
 async def chat(request: ChatRequest):
     """Start or continue a trip planning conversation."""
     return await agent_module.chat_async(request.session_id, request.message)
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format one Server-Sent Events frame."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+# Marks the end of the queue so the draining generator knows to stop.
+_STREAM_DONE = object()
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Same as /chat, but streams the agent's real processing state via SSE.
+
+    Emits `event: status` frames as the agent moves through its stages, then a
+    terminal `event: result` carrying the full ChatResponse payload (or
+    `event: error` on failure). The agent core is shared with /chat — only the
+    transport differs.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def run_agent() -> None:
+        # Set the ContextVar INSIDE the task so nested emit_progress calls find the queue.
+        agent_module._progress_queue.set(queue)
+        try:
+            result = await agent_module.chat_async(request.session_id, request.message)
+            await queue.put({"event": "result", "data": result})
+        except Exception as exc:  # surface failure to the client, then end cleanly
+            await queue.put({"event": "error", "data": {"message": str(exc)}})
+        finally:
+            await queue.put(_STREAM_DONE)
+
+    async def event_stream():
+        task = asyncio.create_task(run_agent())
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_DONE:
+                    break
+                if "event" in item:
+                    yield _sse(item["event"], item["data"])
+                else:
+                    yield _sse("status", item)
+        finally:
+            # Client disconnected (or we're done) — make sure the agent task is cleaned up.
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/session/{session_id}")

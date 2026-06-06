@@ -1,11 +1,15 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+from openai import APIStatusError
 
+import ai_engine
 from ai_engine import (
     TREKKU_CITIES,
     build_itinerary_system_prompt,
+    call_llm,
     extract_params_from_message,
     generate_itinerary,
     parse_itinerary_json,
@@ -18,6 +22,75 @@ from ai_engine import (
 def _mock_llm(return_value: str):
     """Return a patch context manager that makes call_llm return return_value."""
     return patch("ai_engine.call_llm", return_value=return_value)
+
+
+def _api_status_error(status_code: int) -> APIStatusError:
+    """Build a real openai.APIStatusError with the given HTTP status code."""
+    request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+    response = httpx.Response(status_code, request=request)
+    return APIStatusError("rate limit exceeded", response=response, body=None)
+
+
+def _mock_client(create_side_effect):
+    """Patch _get_client to return a client whose create() uses the given side effect."""
+    client = MagicMock()
+    client.chat.completions.create = MagicMock(side_effect=create_side_effect)
+    return patch("ai_engine._get_client", return_value=client), client
+
+
+# ── call_llm retry / backoff ──────────────────────────────────────────────────
+
+def test_call_llm_retries_then_succeeds():
+    """A transient 429 should be retried with backoff and then succeed."""
+    ok = MagicMock()
+    ok.choices = [MagicMock(message=MagicMock(content="hello"))]
+    ctx, client = _mock_client([_api_status_error(429), ok])
+    with ctx, patch("ai_engine.time.sleep") as mock_sleep:
+        result = call_llm("sys", [], "hi")
+    assert result == "hello"
+    assert client.chat.completions.create.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+def test_call_llm_retries_on_413():
+    """The 413 (TPM request too large) is treated as retryable."""
+    ok = MagicMock()
+    ok.choices = [MagicMock(message=MagicMock(content="ok"))]
+    ctx, client = _mock_client([_api_status_error(413), ok])
+    with ctx, patch("ai_engine.time.sleep"):
+        result = call_llm("sys", [], "hi")
+    assert result == "ok"
+    assert client.chat.completions.create.call_count == 2
+
+
+def test_call_llm_reraises_after_max_retries():
+    """When the rate limit never clears, the error is re-raised after max attempts."""
+    ctx, client = _mock_client(_api_status_error(429))
+    with ctx, patch("ai_engine.time.sleep"):
+        with pytest.raises(APIStatusError):
+            call_llm("sys", [], "hi")
+    assert client.chat.completions.create.call_count == ai_engine._MAX_LLM_RETRIES
+
+
+def test_call_llm_does_not_retry_non_retryable_status():
+    """A non rate-limit error (e.g. 500) is raised immediately without retry."""
+    ctx, client = _mock_client(_api_status_error(500))
+    with ctx, patch("ai_engine.time.sleep") as mock_sleep:
+        with pytest.raises(APIStatusError):
+            call_llm("sys", [], "hi")
+    assert client.chat.completions.create.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+# ── extract_params_from_message degrades gracefully on API errors ─────────────
+
+def test_extract_params_returns_current_on_api_error():
+    """A rate-limit error during extraction should not crash; return params unchanged."""
+    existing = {"city": "Klang", "budget": 1500, "days": 2,
+                "origin_state": None, "travel_date": None, "travelers": 1}
+    with patch("ai_engine.call_llm", side_effect=_api_status_error(429)):
+        result = extract_params_from_message("4 days", existing)
+    assert result == existing
 
 
 # ── extract_params_from_message ───────────────────────────────────────────────

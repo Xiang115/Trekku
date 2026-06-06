@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color-scheme: light;
   --ink: #17202a;
   --muted: #667085;
@@ -177,15 +177,16 @@ main {
   padding: clamp(18px, 4vw, 48px);
 }
 
-.planner-shell,
 .section-block {
   width: min(1180px, 100%);
   margin: 0 auto 28px;
 }
 
 .planner-shell {
+  width: min(1360px, 100%);
+  margin: 0 auto 28px;
   display: grid;
-  grid-template-columns: minmax(300px, 0.88fr) minmax(360px, 1.12fr);
+  grid-template-columns: minmax(260px, 0.72fr) minmax(520px, 1.28fr);
   gap: 24px;
   min-height: calc(100vh - 128px);
   align-items: stretch;
@@ -204,9 +205,7 @@ main {
 .peak-month-card,
 .insight-stat-card,
 .chart-panel,
-.analysis-panel,
-.checkout-summary,
-.phone-mock {
+.analysis-panel {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -342,8 +341,7 @@ h3 {
   font-weight: 700;
 }
 
-.search-row button,
-.checkout-summary button {
+.search-row button {
   min-height: 46px;
   padding: 0 18px;
   border: 0;
@@ -494,8 +492,7 @@ h3 {
 .mini-stats,
 .total-budget,
 .ai-status,
-.map-summary,
-.saving-total {
+.map-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1009,7 +1006,7 @@ h3 {
 .peak-month-card {
   background:
     linear-gradient(135deg, rgba(4, 116, 111, 0.92), rgba(42, 111, 187, 0.78)),
-    url("assets/trekku-trip-visual.png") center / cover;
+    url("/assets/trekku-trip-visual.png") center / cover;
   color: #fff;
 }
 
@@ -1096,11 +1093,14 @@ h3 {
 
 .month-bar {
   display: grid;
-  grid-template-rows: 1fr auto auto;
+  /* Fixed-height plot band (matches the 230px ceiling TrendChart uses for
+     --height) so every column's date/value labels share one baseline. With a
+     fractional row, the tallest bar's intrinsic min-height stretched its plot
+     row past the others, dropping that column's labels out of alignment. */
+  grid-template-rows: 230px auto auto;
   gap: 8px;
   align-items: end;
   min-width: 34px;
-  height: 282px;
 }
 
 .month-bar button {
@@ -1147,6 +1147,11 @@ h3 {
   font-size: 12px;
   font-weight: 900;
   text-align: center;
+  /* Reserve two wrapped lines ("17" / "May") for every column. Single-digit
+     days ("1 Jun") would otherwise stay on one line, shrinking this row and
+     dropping that column's value label out of alignment with its neighbours. */
+  line-height: 1.2;
+  height: 2.4em;
 }
 
 .month-bar small {
@@ -1154,6 +1159,9 @@ h3 {
   font-size: 11px;
   font-weight: 750;
   text-align: center;
+  /* Keep the fare on one line so it can't wrap in a narrow column and shift
+     the baseline relative to its neighbours. */
+  white-space: nowrap;
 }
 
 .analysis-panel {
@@ -1207,133 +1215,6 @@ h3 {
 .month-ranking li {
   color: var(--ink);
   font-weight: 900;
-}
-
-.checkout-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(250px, 0.55fr) minmax(210px, 0.45fr);
-  gap: 16px;
-  align-items: stretch;
-}
-
-.comparison-table {
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.table-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 0.7fr 0.7fr;
-  gap: 12px;
-  padding: 15px 16px;
-  background: #fff;
-  border-bottom: 1px solid var(--line);
-  font-weight: 800;
-}
-
-.table-row:last-child {
-  border-bottom: 0;
-}
-
-.table-row.header {
-  background: var(--teal-dark);
-  color: #fff;
-}
-
-.table-row span:nth-child(2),
-.table-row span:nth-child(3) {
-  text-align: right;
-}
-
-.checkout-summary {
-  display: grid;
-  gap: 8px;
-  padding: 18px;
-}
-
-.checkout-summary > span {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 850;
-}
-
-.checkout-summary > strong {
-  font-size: 30px;
-}
-
-.saving-total {
-  margin: 8px 0;
-  padding: 14px;
-  border-radius: 8px;
-  background: #dbf4ea;
-  color: var(--green);
-  font-weight: 950;
-}
-
-.phone-mock {
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: #1f2933;
-}
-
-.phone-screen {
-  position: relative;
-  width: min(100%, 220px);
-  min-height: 360px;
-  padding: 20px 14px;
-  border: 8px solid #0d1117;
-  border-radius: 26px;
-  background:
-    linear-gradient(135deg, rgba(4, 116, 111, 0.36), rgba(243, 169, 62, 0.22)),
-    url("assets/trekku-trip-visual.png") center / cover;
-}
-
-.phone-time {
-  display: block;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.notification {
-  position: absolute;
-  right: 12px;
-  bottom: 18px;
-  left: 12px;
-  padding: 12px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: var(--shadow);
-}
-
-.notification p {
-  margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.notification div {
-  display: flex;
-  gap: 8px;
-}
-
-.notification button {
-  flex: 1;
-  min-height: 32px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--teal);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.notification button + button {
-  background: var(--soft);
-  color: var(--ink);
 }
 
 .auth-modal[hidden] {
@@ -1398,7 +1279,7 @@ h3 {
   min-height: 560px;
   background:
     linear-gradient(180deg, rgba(3, 82, 79, 0.12), rgba(3, 82, 79, 0.86)),
-    url("assets/trekku-trip-visual.png") center / cover;
+    url("/assets/trekku-trip-visual.png") center / cover;
   color: #fff;
 }
 
@@ -1547,8 +1428,7 @@ h3 {
   .dashboard-grid,
   .account-grid,
   .insights-grid,
-  .analytics-layout,
-  .checkout-grid {
+  .analytics-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1633,14 +1513,11 @@ h3 {
     flex-direction: column;
   }
 
-  .timeline li,
-  .table-row {
+  .timeline li {
     grid-template-columns: 1fr;
   }
 
-  .timeline b,
-  .table-row span:nth-child(2),
-  .table-row span:nth-child(3) {
+  .timeline b {
     text-align: left;
   }
 
