@@ -575,7 +575,8 @@ def test_refresh_all_calls_fetch_for_every_seed_entry():
     assert len(flight_sentinel_ids) == len(TREKKU_SEED["flight_origins"])
 
 
-def test_refresh_all_counts_errors_when_fetch_returns_none():
+def test_refresh_all_counts_empty_results_as_empty_not_errors():
+    """An empty fetch (no third-party results) is benign and must NOT fail the job."""
     mock_dt = MagicMock()
     mock_dt.now.return_value.day = 15
 
@@ -588,10 +589,32 @@ def test_refresh_all_counts_errors_when_fetch_returns_none():
         summary = refresh_all()
 
     total_seed_entries = len(TREKKU_SEED["cities"]) * 2 + len(TREKKU_SEED["flight_origins"])
-    assert summary["errors"] == total_seed_entries
+    assert summary["errors"] == 0
+    assert summary["empty"] == total_seed_entries
     assert summary["hotels"] == 0
     assert summary["attractions"] == 0
     assert summary["flights"] == 0
+
+
+def test_refresh_all_counts_store_failure_as_error():
+    """A genuine Firebase write failure IS an error and must fail the job."""
+    mock_dt = MagicMock()
+    mock_dt.now.return_value.day = 15
+
+    def fake_fetch(query, entity_type, api_key, iata=None, travel_date=None):
+        return [{"hotel_id": "h1", "attraction_id": "a1", "flight_id": "f1", "name": query}]
+
+    with patch("knowledge_capture.quota_tracker", return_value=("fake_key", "key_1")), \
+         patch("knowledge_capture.fetch_and_parse", side_effect=fake_fetch), \
+         patch("knowledge_capture.store_to_firebase", return_value=False), \
+         patch("knowledge_capture._increment_quota"), \
+         patch("knowledge_capture._write_ttl_sentinel"), \
+         patch("knowledge_capture.capture_rating_snapshot", return_value=0), \
+         patch("knowledge_capture.datetime", mock_dt):
+        summary = refresh_all()
+
+    assert summary["errors"] > 0
+    assert summary["empty"] == 0
 
 
 def test_refresh_all_stops_on_quota_fallback_without_calling_fetch():

@@ -1,0 +1,832 @@
+/* ------------------------------------------------------------------ *
+ * Additions for the React rebuild.
+ * Only NEW classes live here; they reuse the design tokens and
+ * primitives defined in theme.css (--teal, --soft, --line, .badge …).
+ * ------------------------------------------------------------------ */
+
+/* ---- Generic states -------------------------------------------------- */
+.empty-state,
+.loading-note,
+.error-note {
+  display: grid;
+  gap: 6px;
+  padding: 18px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.error-note {
+  border-color: var(--coral);
+  background: #fdeeea;
+  color: #9c3c2b;
+  border-style: solid;
+}
+
+.empty-state h3 {
+  margin-bottom: 2px;
+  color: var(--ink);
+}
+
+.inline-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(4, 116, 111, 0.25);
+  border-top-color: var(--teal);
+  border-radius: 999px;
+  animation: trekku-spin 0.7s linear infinite;
+}
+
+@keyframes trekku-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- Chat planner ---------------------------------------------------- */
+.chat-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+
+.chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(560px, 55vh);
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.chat-bubble.user {
+  white-space: pre-wrap;
+}
+
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-bottom-left-radius: 4px;
+}
+
+/* Markdown rendering inside assistant bubbles */
+.chat-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown p {
+  margin: 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4 {
+  margin: 4px 0 0;
+  line-height: 1.25;
+}
+
+.chat-markdown h1 {
+  font-size: 20px;
+}
+
+.chat-markdown h2 {
+  font-size: 18px;
+}
+
+.chat-markdown h3,
+.chat-markdown h4 {
+  font-size: 16px;
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-markdown li {
+  padding-left: 2px;
+}
+
+.chat-markdown li > ul,
+.chat-markdown li > ol {
+  margin-top: 4px;
+}
+
+.chat-markdown a {
+  color: var(--teal);
+  font-weight: 750;
+  text-decoration: underline;
+}
+
+.chat-markdown strong {
+  font-weight: 850;
+}
+
+.chat-markdown code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(23, 32, 42, 0.07);
+  font-size: 0.92em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.chat-markdown pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(23, 32, 42, 0.06);
+  overflow-x: auto;
+}
+
+.chat-markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.chat-markdown blockquote {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.chat-markdown table {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  background: var(--teal);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- Planning indicator (interactive waiting experience) ------------- */
+.planning-indicator {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 100%;
+}
+
+.planning-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Dotted route the plane glides along. */
+.planning-route {
+  position: relative;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 16px;
+  border-radius: 999px;
+  background-image: radial-gradient(var(--line) 1.4px, transparent 1.4px);
+  background-size: 8px 8px;
+  background-position: 0 center;
+  background-repeat: repeat-x;
+}
+
+.planning-plane {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  font-size: 14px;
+  line-height: 1;
+  transform: translate(0, -50%);
+  animation: trekku-fly 2.4s ease-in-out infinite;
+}
+
+@keyframes trekku-fly {
+  0% {
+    transform: translate(0, -50%);
+  }
+  50% {
+    transform: translate(42px, -50%);
+  }
+  50.01% {
+    transform: translate(42px, -50%);
+    opacity: 0;
+  }
+  55% {
+    transform: translate(0, -50%);
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(0, -50%);
+    opacity: 1;
+  }
+}
+
+.planning-step {
+  font-weight: 750;
+  color: var(--ink);
+  animation: trekku-fade-in 0.4s ease;
+}
+
+.planning-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.planning-tip-icon {
+  flex: 0 0 auto;
+  line-height: 1.4;
+}
+
+.planning-tip-text {
+  animation: trekku-fade-in 0.5s ease;
+}
+
+@keyframes trekku-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .planning-plane {
+    animation: none;
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+  .planning-step,
+  .planning-tip-text {
+    animation: none;
+  }
+}
+
+.chat-empty {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.starter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.starter-chip {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--teal-dark);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.starter-chip:hover {
+  background: var(--mint);
+}
+
+.params-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.params-chips .badge {
+  background: var(--soft);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  gap: 6px;
+}
+
+.params-chips .badge.is-set {
+  background: var(--mint);
+  color: var(--teal-dark);
+}
+
+.search-row.is-busy button {
+  opacity: 0.6;
+}
+
+/* ---- Itinerary entities --------------------------------------------- */
+.entity-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.entity-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.entity-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--teal-dark);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.entity-card h4 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.entity-meta {
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.entity-price {
+  color: var(--green);
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.entity-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.swap-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 850;
+}
+
+.swap-button:hover {
+  border-color: var(--teal);
+  color: var(--teal-dark);
+}
+
+.swap-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.entity-list {
+  display: grid;
+  gap: 12px;
+}
+
+.day-notes {
+  margin: 0;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.itinerary-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #dbf4ea;
+  color: var(--green);
+  font-weight: 950;
+}
+
+/* ---- Star rating ----------------------------------------------------- */
+.star-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.star-rating button {
+  display: inline-grid;
+  place-items: center;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--line);
+  line-height: 0;
+}
+
+.star-rating button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+  stroke: currentColor;
+}
+
+.star-rating button.is-filled {
+  color: var(--amber);
+}
+
+.star-rating.is-saved {
+  opacity: 0.9;
+}
+
+.rating-saved {
+  margin-left: 6px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+/* ---- Generic modal (swap dialog) ------------------------------------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(23, 32, 42, 0.58);
+  backdrop-filter: blur(8px);
+}
+
+.modal-dialog {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 16px;
+  width: min(440px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 22px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.modal-dialog h3 {
+  margin: 0;
+}
+
+.modal-dialog p {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.candidate-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.candidate-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 800;
+  text-align: left;
+}
+
+.candidate-option.is-selected {
+  border-color: var(--teal);
+  box-shadow: inset 0 0 0 1px var(--teal);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-actions button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-weight: 900;
+}
+
+.modal-actions .primary {
+  border: 0;
+  background: var(--teal);
+  color: #fff;
+}
+
+.modal-actions .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-actions .ghost {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+
+/* ---- Insights selectors + trend chart -------------------------------- */
+.insight-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+}
+
+.select-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.select-field select {
+  min-height: 44px;
+  min-width: 200px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 750;
+  outline: 0;
+}
+
+.select-field select:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(4, 116, 111, 0.12);
+}
+
+/* Trend chart reuses the .bar-chart / .month-bar look but with a
+   variable number of columns (one per snapshot date). */
+.bar-chart.trend {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(30px, 1fr);
+  /* Extra headroom above the bars so the hover price tag (rendered above the
+     bar via ::before) isn't clipped on the tallest/peak bar — overflow-x:auto
+     also clips the top edge. */
+  padding-top: 44px;
+}
+
+/* ---- Itinerary cost breakdown --------------------------------------- */
+.cost-breakdown {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.cost-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.cost-row span:last-child {
+  color: var(--muted);
+}
+
+.cost-row.total {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--green);
+  font-weight: 950;
+}
+
+.cost-row.total strong {
+  color: var(--green);
+}
+
+.est-tag {
+  margin-left: 5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--mint);
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  vertical-align: middle;
+}
+
+/* Sub-label that separates the "not booked" estimates from the booked items. */
+.cost-section-label,
+.checkout-section-label {
+  margin: 12px 0 0;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.checkout-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.checkout-cta {
+  min-height: 48px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--teal);
+  color: #fff;
+  font-weight: 950;
+}
+
+.checkout-cta:hover {
+  background: var(--teal-dark);
+}
+
+/* ---- Checkout modal -------------------------------------------------- */
+.checkout-modal {
+  width: min(480px, 100%);
+}
+
+.checkout-lines {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.checkout-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.checkout-line span:first-child {
+  color: var(--muted);
+}
+
+.checkout-line.total {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--green);
+}
+
+.checkout-line.total strong {
+  color: var(--green);
+  font-weight: 950;
+}
+
+.pay-form {
+  display: grid;
+  gap: 12px;
+}
+
+.pay-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.pay-form input {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 750;
+  outline: 0;
+}
+
+.pay-form input:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(4, 116, 111, 0.12);
+}
+
+.pay-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.checkout-processing {
+  display: grid;
+  place-items: center;
+  gap: 14px;
+  padding: 32px 0;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.checkout-success {
+  display: grid;
+  gap: 14px;
+  text-align: center;
+}
+
+.checkout-success .modal-actions {
+  justify-content: center;
+}
+
+.success-check {
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--mint);
+  color: var(--teal-dark);
+  font-size: 28px;
+  font-weight: 900;
+}
