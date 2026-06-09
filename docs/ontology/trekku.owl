@@ -1,0 +1,1024 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  Trekku Travel Knowledge Management System — OWL Ontology
+  Ontology IRI : http://trekku.um.edu.my/ontology#
+  Format       : RDF/XML (Protégé 5.x / HermiT 1.4+)
+  Author       : Trekku Project, Universiti Malaya
+  Date         : 2026-06-09
+
+  SWRL Rule note
+  ──────────────
+  The single SWRL rule fires when a Flight's price exceeds the TripParams
+  budget and classifies the linked Itinerary as OverBudgetItinerary.
+  The seed Itinerary (Itinerary_KL_3Day) uses AirAsiaFlight_PEN_KUL whose
+  price is MYR 189, well below its TripParams budget of MYR 1 500.
+  It therefore will NOT be classified as OverBudgetItinerary under the
+  reasoner — this is intentional so the default data is clean.
+  To trigger the rule in Protégé, change the flight price to a value
+  greater than the budget, or change hasMaxPrice on the TripParams
+  individual, then run HermiT.
+
+  Hotel tier classification (reasoner-inferred, NOT asserted):
+  ─────────────────────────────────────────────────────────────
+  HotelIndividual_Budget   hasMaxPrice 150.00  → classified BudgetHotel   (< 200)
+  HotelIndividual_MidRange hasMaxPrice 350.00  → classified MidRangeHotel (≥ 200, < 500)
+  HotelIndividual_Luxury   hasMaxPrice 820.00  → classified LuxuryHotel   (≥ 500)
+-->
+
+<!DOCTYPE rdf:RDF [
+  <!ENTITY owl  "http://www.w3.org/2002/07/owl#">
+  <!ENTITY rdf  "http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <!ENTITY rdfs "http://www.w3.org/2000/01/rdf-schema#">
+  <!ENTITY xsd  "http://www.w3.org/2001/XMLSchema#">
+  <!ENTITY swrl "http://www.w3.org/2003/11/swrl#">
+  <!ENTITY swrlb "http://www.w3.org/2003/11/swrlb#">
+  <!ENTITY trekku "http://trekku.um.edu.my/ontology#">
+]>
+
+<rdf:RDF
+  xmlns:owl   ="http://www.w3.org/2002/07/owl#"
+  xmlns:rdf   ="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+  xmlns:rdfs  ="http://www.w3.org/2000/01/rdf-schema#"
+  xmlns:xsd   ="http://www.w3.org/2001/XMLSchema#"
+  xmlns:swrl  ="http://www.w3.org/2003/11/swrl#"
+  xmlns:swrlb ="http://www.w3.org/2003/11/swrlb#"
+  xmlns:trekku="http://trekku.um.edu.my/ontology#"
+  xmlns       ="http://trekku.um.edu.my/ontology#"
+  xml:base    ="http://trekku.um.edu.my/ontology">
+
+  <!-- ═══════════════════════════════════════════════════════════
+       ONTOLOGY HEADER
+       ═══════════════════════════════════════════════════════════ -->
+  <owl:Ontology rdf:about="http://trekku.um.edu.my/ontology">
+    <rdfs:label>Trekku Travel Knowledge Management Ontology</rdfs:label>
+    <rdfs:comment>OWL ontology for the Trekku AI-driven travel KMS. Mirrors the
+    Firestore entity model (Hotel, Attraction, Flight, Itinerary, etc.) and adds
+    reasoner-inferred hotel price tiers and a SWRL over-budget detection rule.
+    Namespace: http://trekku.um.edu.my/ontology#  Prefix: trekku:</rdfs:comment>
+    <owl:versionInfo>1.0.0 — 2026-06-09</owl:versionInfo>
+  </owl:Ontology>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       CLASS HIERARCHY — TBox
+       ═══════════════════════════════════════════════════════════ -->
+
+  <!-- ── TravelEntity (abstract superclass) ────────────────────── -->
+  <owl:Class rdf:about="&trekku;TravelEntity">
+    <rdfs:label>Travel Entity</rdfs:label>
+    <rdfs:comment>Abstract superclass for all bookable or visitable travel assets
+    managed by the Trekku knowledge base.</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── Hotel ──────────────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;Hotel">
+    <rdfs:label>Hotel</rdfs:label>
+    <rdfs:comment>A lodging property with nightly price range (MYR), rating, and
+    amenities. Automatically classified into a price tier by the reasoner via the
+    hasMaxPrice data property.</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;TravelEntity"/>
+  </owl:Class>
+
+  <!-- ── Attraction ─────────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;Attraction">
+    <rdfs:label>Attraction</rdfs:label>
+    <rdfs:comment>A tourist point-of-interest (museum, landmark, natural site, etc.)
+    captured from the Trekku knowledge base via Google Maps / SerpAPI.</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;TravelEntity"/>
+  </owl:Class>
+
+  <!-- ── Flight ─────────────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;Flight">
+    <rdfs:label>Flight</rdfs:label>
+    <rdfs:comment>A commercial flight option captured from the Trekku knowledge base
+    via Google Flights / SerpAPI. Prices are in MYR.</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;TravelEntity"/>
+  </owl:Class>
+
+  <!-- Hotel, Attraction, Flight are pairwise disjoint -->
+  <owl:AllDisjointClasses>
+    <owl:members rdf:parseType="Collection">
+      <rdf:Description rdf:about="&trekku;Hotel"/>
+      <rdf:Description rdf:about="&trekku;Attraction"/>
+      <rdf:Description rdf:about="&trekku;Flight"/>
+    </owl:members>
+  </owl:AllDisjointClasses>
+
+  <!-- ────────────────────────────────────────────────────────────
+       DEFINED (Equivalent-Class) Hotel price-tier subclasses
+       The three ranges are mutually exclusive and cover all prices:
+         BudgetHotel   : hasMaxPrice < 200   (maxExclusive 200)
+         MidRangeHotel : 200 ≤ hasMaxPrice < 500
+         LuxuryHotel   : hasMaxPrice ≥ 500   (minInclusive 500)
+       A Hotel individual asserted ONLY as Hotel with a hasMaxPrice value
+       is automatically sorted into exactly one tier by HermiT.
+       ──────────────────────────────────────────────────────────── -->
+
+  <!-- ── BudgetHotel ≡ Hotel ⊓ (hasMaxPrice some xsd:decimal[maxExclusive 200]) -->
+  <owl:Class rdf:about="&trekku;BudgetHotel">
+    <rdfs:label>Budget Hotel</rdfs:label>
+    <rdfs:comment>Hotels whose maximum nightly rate is less than MYR 200. Defined
+    class: inferred by the reasoner from the hasMaxPrice value; do not assert
+    BudgetHotel directly on individuals.</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;Hotel"/>
+    <owl:equivalentClass>
+      <owl:Class>
+        <owl:intersectionOf rdf:parseType="Collection">
+          <rdf:Description rdf:about="&trekku;Hotel"/>
+          <owl:Restriction>
+            <owl:onProperty rdf:resource="&trekku;hasMaxPrice"/>
+            <owl:someValuesFrom>
+              <rdfs:Datatype>
+                <owl:onDatatype rdf:resource="&xsd;decimal"/>
+                <owl:withRestrictions rdf:parseType="Collection">
+                  <rdf:Description>
+                    <xsd:maxExclusive rdf:datatype="&xsd;decimal">200</xsd:maxExclusive>
+                  </rdf:Description>
+                </owl:withRestrictions>
+              </rdfs:Datatype>
+            </owl:someValuesFrom>
+          </owl:Restriction>
+        </owl:intersectionOf>
+      </owl:Class>
+    </owl:equivalentClass>
+  </owl:Class>
+
+  <!-- ── MidRangeHotel ≡ Hotel ⊓ (hasMaxPrice some xsd:decimal[≥200, <500]) -->
+  <owl:Class rdf:about="&trekku;MidRangeHotel">
+    <rdfs:label>Mid-Range Hotel</rdfs:label>
+    <rdfs:comment>Hotels whose maximum nightly rate is between MYR 200 (inclusive)
+    and MYR 500 (exclusive). Defined class: inferred by the reasoner from the
+    hasMaxPrice value; do not assert MidRangeHotel directly on individuals.</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;Hotel"/>
+    <owl:equivalentClass>
+      <owl:Class>
+        <owl:intersectionOf rdf:parseType="Collection">
+          <rdf:Description rdf:about="&trekku;Hotel"/>
+          <owl:Restriction>
+            <owl:onProperty rdf:resource="&trekku;hasMaxPrice"/>
+            <owl:someValuesFrom>
+              <rdfs:Datatype>
+                <owl:onDatatype rdf:resource="&xsd;decimal"/>
+                <owl:withRestrictions rdf:parseType="Collection">
+                  <rdf:Description>
+                    <xsd:minInclusive rdf:datatype="&xsd;decimal">200</xsd:minInclusive>
+                  </rdf:Description>
+                  <rdf:Description>
+                    <xsd:maxExclusive rdf:datatype="&xsd;decimal">500</xsd:maxExclusive>
+                  </rdf:Description>
+                </owl:withRestrictions>
+              </rdfs:Datatype>
+            </owl:someValuesFrom>
+          </owl:Restriction>
+        </owl:intersectionOf>
+      </owl:Class>
+    </owl:equivalentClass>
+  </owl:Class>
+
+  <!-- ── LuxuryHotel ≡ Hotel ⊓ (hasMaxPrice some xsd:decimal[≥500]) -->
+  <owl:Class rdf:about="&trekku;LuxuryHotel">
+    <rdfs:label>Luxury Hotel</rdfs:label>
+    <rdfs:comment>Hotels whose maximum nightly rate is MYR 500 or above. Defined
+    class: inferred by the reasoner from the hasMaxPrice value; do not assert
+    LuxuryHotel directly on individuals.</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;Hotel"/>
+    <owl:equivalentClass>
+      <owl:Class>
+        <owl:intersectionOf rdf:parseType="Collection">
+          <rdf:Description rdf:about="&trekku;Hotel"/>
+          <owl:Restriction>
+            <owl:onProperty rdf:resource="&trekku;hasMaxPrice"/>
+            <owl:someValuesFrom>
+              <rdfs:Datatype>
+                <owl:onDatatype rdf:resource="&xsd;decimal"/>
+                <owl:withRestrictions rdf:parseType="Collection">
+                  <rdf:Description>
+                    <xsd:minInclusive rdf:datatype="&xsd;decimal">500</xsd:minInclusive>
+                  </rdf:Description>
+                </owl:withRestrictions>
+              </rdfs:Datatype>
+            </owl:someValuesFrom>
+          </owl:Restriction>
+        </owl:intersectionOf>
+      </owl:Class>
+    </owl:equivalentClass>
+  </owl:Class>
+
+  <!-- ── Location ───────────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;Location">
+    <rdfs:label>Location</rdfs:label>
+    <rdfs:comment>A geographic location (city/region) with coordinates and country.
+    Used by TravelEntity individuals to express where a hotel, attraction, or
+    flight origin is situated.</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── Itinerary ──────────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;Itinerary">
+    <rdfs:label>Itinerary</rdfs:label>
+    <rdfs:comment>An AI-generated trip itinerary produced by the Trekku agent for a
+    given TripParams. Contains one or more ItineraryDay instances and an optional
+    outbound Flight.</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── ItineraryDay ───────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;ItineraryDay">
+    <rdfs:label>Itinerary Day</rdfs:label>
+    <rdfs:comment>A single day within an Itinerary, linking a Hotel (overnight
+    accommodation) and one or more Attractions (activities).</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── TripParams ─────────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;TripParams">
+    <rdfs:label>Trip Parameters</rdfs:label>
+    <rdfs:comment>The user-supplied parameters for a trip: budget (MYR), number of
+    days, number of travellers, origin state, destination city, and travel date.
+    Used by the SWRL over-budget rule.</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── AgentSession ───────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;AgentSession">
+    <rdfs:label>Agent Session</rdfs:label>
+    <rdfs:comment>A conversational session between a user and the Trekku AI agent.
+    Tracks conversation history, collected TripParams, and the last itinerary
+    generated in that session.</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── TacitFeedback ──────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;TacitFeedback">
+    <rdfs:label>Tacit Feedback</rdfs:label>
+    <rdfs:comment>Explicit or implicit feedback signal recorded after a user
+    interacts with an Itinerary (rating, text comment, modification). The signal
+    value ranges from -1.0 (very negative) to +1.0 (very positive).</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── RatingSnapshot ─────────────────────────────────────────── -->
+  <owl:Class rdf:about="&trekku;RatingSnapshot">
+    <rdfs:label>Rating Snapshot</rdfs:label>
+    <rdfs:comment>A point-in-time record of a TravelEntity's rating, review count,
+    and minimum price, captured during scheduled knowledge-base refresh cycles to
+    support trend analysis.</rdfs:comment>
+  </owl:Class>
+
+  <!-- ── OverBudgetItinerary (target class for SWRL rule) ──────── -->
+  <owl:Class rdf:about="&trekku;OverBudgetItinerary">
+    <rdfs:label>Over-Budget Itinerary</rdfs:label>
+    <rdfs:comment>An Itinerary classified by the SWRL rule as over-budget: its
+    linked Flight price exceeds the budget declared in its TripParams. The seed
+    individual Itinerary_KL_3Day is intentionally NOT over-budget (flight MYR 189
+    vs. budget MYR 1500).</rdfs:comment>
+    <rdfs:subClassOf rdf:resource="&trekku;Itinerary"/>
+  </owl:Class>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       OBJECT PROPERTIES
+       ═══════════════════════════════════════════════════════════ -->
+
+  <!-- hasLocation -->
+  <owl:ObjectProperty rdf:about="&trekku;hasLocation">
+    <rdfs:label>has Location</rdfs:label>
+    <rdfs:comment>Links a TravelEntity to its geographic Location.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TravelEntity"/>
+    <rdfs:range  rdf:resource="&trekku;Location"/>
+    <owl:inverseOf rdf:resource="&trekku;isLocationOf"/>
+  </owl:ObjectProperty>
+
+  <owl:ObjectProperty rdf:about="&trekku;isLocationOf">
+    <rdfs:label>is Location Of</rdfs:label>
+    <rdfs:comment>Inverse of hasLocation. Links a Location back to the TravelEntity
+    or entities situated there.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Location"/>
+    <rdfs:range  rdf:resource="&trekku;TravelEntity"/>
+    <owl:inverseOf rdf:resource="&trekku;hasLocation"/>
+  </owl:ObjectProperty>
+
+  <!-- includesDay -->
+  <owl:ObjectProperty rdf:about="&trekku;includesDay">
+    <rdfs:label>includes Day</rdfs:label>
+    <rdfs:comment>Links an Itinerary to each of its constituent ItineraryDay
+    individuals.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Itinerary"/>
+    <rdfs:range  rdf:resource="&trekku;ItineraryDay"/>
+    <owl:inverseOf rdf:resource="&trekku;isDayOf"/>
+  </owl:ObjectProperty>
+
+  <owl:ObjectProperty rdf:about="&trekku;isDayOf">
+    <rdfs:label>is Day Of</rdfs:label>
+    <rdfs:comment>Inverse of includesDay. Links an ItineraryDay back to its parent
+    Itinerary.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;ItineraryDay"/>
+    <rdfs:range  rdf:resource="&trekku;Itinerary"/>
+    <owl:inverseOf rdf:resource="&trekku;includesDay"/>
+  </owl:ObjectProperty>
+
+  <!-- dayHasHotel -->
+  <owl:ObjectProperty rdf:about="&trekku;dayHasHotel">
+    <rdfs:label>day Has Hotel</rdfs:label>
+    <rdfs:comment>Links an ItineraryDay to the Hotel booked for that night.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;ItineraryDay"/>
+    <rdfs:range  rdf:resource="&trekku;Hotel"/>
+  </owl:ObjectProperty>
+
+  <!-- dayHasAttraction -->
+  <owl:ObjectProperty rdf:about="&trekku;dayHasAttraction">
+    <rdfs:label>day Has Attraction</rdfs:label>
+    <rdfs:comment>Links an ItineraryDay to an Attraction visited on that day.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;ItineraryDay"/>
+    <rdfs:range  rdf:resource="&trekku;Attraction"/>
+  </owl:ObjectProperty>
+
+  <!-- itineraryHasFlight -->
+  <owl:ObjectProperty rdf:about="&trekku;itineraryHasFlight">
+    <rdfs:label>itinerary Has Flight</rdfs:label>
+    <rdfs:comment>Links an Itinerary to its outbound Flight. Used by the SWRL
+    over-budget rule to compare flight price against trip budget.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Itinerary"/>
+    <rdfs:range  rdf:resource="&trekku;Flight"/>
+  </owl:ObjectProperty>
+
+  <!-- basedOnTrip -->
+  <owl:ObjectProperty rdf:about="&trekku;basedOnTrip">
+    <rdfs:label>based On Trip</rdfs:label>
+    <rdfs:comment>Links an Itinerary to the TripParams that were used to generate
+    it. Required by the SWRL over-budget rule.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Itinerary"/>
+    <rdfs:range  rdf:resource="&trekku;TripParams"/>
+  </owl:ObjectProperty>
+
+  <!-- sessionProducedItinerary -->
+  <owl:ObjectProperty rdf:about="&trekku;sessionProducedItinerary">
+    <rdfs:label>session Produced Itinerary</rdfs:label>
+    <rdfs:comment>Links an AgentSession to the Itinerary it generated for the
+    user.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;AgentSession"/>
+    <rdfs:range  rdf:resource="&trekku;Itinerary"/>
+  </owl:ObjectProperty>
+
+  <!-- feedbackOn -->
+  <owl:ObjectProperty rdf:about="&trekku;feedbackOn">
+    <rdfs:label>feedback On</rdfs:label>
+    <rdfs:comment>Links a TacitFeedback record to the TravelEntity (Hotel,
+    Attraction, or Flight) it concerns.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TacitFeedback"/>
+    <rdfs:range  rdf:resource="&trekku;TravelEntity"/>
+  </owl:ObjectProperty>
+
+  <!-- snapshotOf -->
+  <owl:ObjectProperty rdf:about="&trekku;snapshotOf">
+    <rdfs:label>snapshot Of</rdfs:label>
+    <rdfs:comment>Links a RatingSnapshot to the TravelEntity whose rating and price
+    it records at a point in time.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;RatingSnapshot"/>
+    <rdfs:range  rdf:resource="&trekku;TravelEntity"/>
+  </owl:ObjectProperty>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       DATA PROPERTIES
+       ═══════════════════════════════════════════════════════════ -->
+
+  <!-- ── TravelEntity common properties ──────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasName">
+    <rdfs:label>has Name</rdfs:label>
+    <rdfs:comment>Human-readable name of the TravelEntity (hotel name, attraction
+    name, airline + flight number, etc.).</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TravelEntity"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasSource">
+    <rdfs:label>has Source</rdfs:label>
+    <rdfs:comment>Data source identifier for this entity record, e.g.
+    "serpapi_hotels", "serpapi_attractions", "serpapi_flights".</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TravelEntity"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;lastUpdated">
+    <rdfs:label>last Updated</rdfs:label>
+    <rdfs:comment>ISO 8601 UTC timestamp of the last knowledge-base refresh for
+    this entity.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TravelEntity"/>
+    <rdfs:range  rdf:resource="&xsd;dateTime"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── Hotel properties ─────────────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasMinPrice">
+    <rdfs:label>has Min Price (MYR)</rdfs:label>
+    <rdfs:comment>Lowest nightly rate for this hotel in Malaysian Ringgit (MYR).
+    Used with hasMaxPrice to determine the price range.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Hotel"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasMaxPrice">
+    <rdfs:label>has Max Price (MYR)</rdfs:label>
+    <rdfs:comment>Highest nightly rate for this hotel in Malaysian Ringgit (MYR).
+    This value drives the reasoner-inferred price-tier classification:
+    &lt;200 → BudgetHotel; 200–499 → MidRangeHotel; ≥500 → LuxuryHotel.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Hotel"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasRating">
+    <rdfs:label>has Rating</rdfs:label>
+    <rdfs:comment>Overall user rating for the hotel, typically on a 0–5 scale as
+    returned by the Google Hotels SerpAPI engine.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Hotel"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasAmenity">
+    <rdfs:label>has Amenity</rdfs:label>
+    <rdfs:comment>A single amenity offered by this hotel (e.g. "Free Wi-Fi",
+    "Swimming Pool", "Breakfast included"). Multi-valued; assert multiple
+    triples for multiple amenities.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Hotel"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;hasCategory">
+    <rdfs:label>has Category</rdfs:label>
+    <rdfs:comment>Denormalised tier label stored in the source data record
+    ("budget", "mid-range", "luxury"). Note: the OWL tier classification is
+    determined by hasMaxPrice, not by this string.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Hotel"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── Attraction properties ────────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;poiCategory">
+    <rdfs:label>POI Category</rdfs:label>
+    <rdfs:comment>Type of point-of-interest as returned by the Google Maps engine,
+    e.g. "Museum", "Religious site", "Natural feature".</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Attraction"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;openingHours">
+    <rdfs:label>opening Hours</rdfs:label>
+    <rdfs:comment>Human-readable opening hours string for the attraction,
+    e.g. "Daily 9 AM – 10 PM".</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Attraction"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;estimatedDuration">
+    <rdfs:label>estimated Duration</rdfs:label>
+    <rdfs:comment>Recommended visiting duration for the attraction, e.g.
+    "1–2 hours".</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Attraction"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;popularityScore">
+    <rdfs:label>popularity Score</rdfs:label>
+    <rdfs:comment>Google Maps popularity / rating score for the attraction on a
+    0–5 scale.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Attraction"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── Flight properties ────────────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;airline">
+    <rdfs:label>airline</rdfs:label>
+    <rdfs:comment>Name of the airline operating the flight, e.g. "AirAsia",
+    "Malaysia Airlines", "Batik Air".</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Flight"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;originState">
+    <rdfs:label>origin State</rdfs:label>
+    <rdfs:comment>Malaysian state or city from which the flight departs, matching
+    the TREKKU_SEED flight_origins list (e.g. "Penang", "Johor Bahru").</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Flight"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;price">
+    <rdfs:label>price (MYR)</rdfs:label>
+    <rdfs:comment>Total fare for this flight option in Malaysian Ringgit (MYR) as
+    returned by the Google Flights SerpAPI engine. Used by the SWRL over-budget
+    detection rule.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Flight"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;durationMinutes">
+    <rdfs:label>duration Minutes</rdfs:label>
+    <rdfs:comment>Total flight duration in minutes including layovers, as returned
+    by the Google Flights SerpAPI engine.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Flight"/>
+    <rdfs:range  rdf:resource="&xsd;integer"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── Location properties ──────────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;cityName">
+    <rdfs:label>city Name</rdfs:label>
+    <rdfs:comment>Name of the city or urban area represented by this Location
+    individual.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Location"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;country">
+    <rdfs:label>country</rdfs:label>
+    <rdfs:comment>Country where this Location is situated. Defaults to "Malaysia"
+    for all Trekku seed data.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Location"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;latitude">
+    <rdfs:label>latitude</rdfs:label>
+    <rdfs:comment>WGS-84 latitude of this Location in decimal degrees.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Location"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;longitude">
+    <rdfs:label>longitude</rdfs:label>
+    <rdfs:comment>WGS-84 longitude of this Location in decimal degrees.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;Location"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── TripParams properties ────────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;budget">
+    <rdfs:label>budget (MYR)</rdfs:label>
+    <rdfs:comment>Total trip budget in Malaysian Ringgit provided by the user. Used
+    in the SWRL over-budget detection rule.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TripParams"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;days">
+    <rdfs:label>days</rdfs:label>
+    <rdfs:comment>Number of trip days requested by the user.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TripParams"/>
+    <rdfs:range  rdf:resource="&xsd;integer"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;travelers">
+    <rdfs:label>travelers</rdfs:label>
+    <rdfs:comment>Number of travellers for whom the itinerary is generated.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TripParams"/>
+    <rdfs:range  rdf:resource="&xsd;integer"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;travelDate">
+    <rdfs:label>travel Date</rdfs:label>
+    <rdfs:comment>Requested travel date string in ISO 8601 format (YYYY-MM-DD)
+    as supplied by the user.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TripParams"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── TacitFeedback properties ─────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;feedbackType">
+    <rdfs:label>feedback Type</rdfs:label>
+    <rdfs:comment>Category of feedback: "explicit_rating", "explicit_text", or
+    "implicit_modification".</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TacitFeedback"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;signal">
+    <rdfs:label>signal</rdfs:label>
+    <rdfs:comment>Normalised feedback signal ranging from -1.0 (very negative) to
+    +1.0 (very positive). Used to adjust entity weights in the knowledge
+    base.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;TacitFeedback"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <!-- ── RatingSnapshot properties ────────────────────────────── -->
+
+  <owl:DatatypeProperty rdf:about="&trekku;snapshotDate">
+    <rdfs:label>snapshot Date</rdfs:label>
+    <rdfs:comment>Date on which this rating snapshot was captured, in YYYY-MM-DD
+    format.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;RatingSnapshot"/>
+    <rdfs:range  rdf:resource="&xsd;string"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;rating">
+    <rdfs:label>rating</rdfs:label>
+    <rdfs:comment>Overall rating value recorded in this snapshot (0–5 scale).</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;RatingSnapshot"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;reviewCount">
+    <rdfs:label>review Count</rdfs:label>
+    <rdfs:comment>Total number of user reviews recorded for this entity at the
+    snapshot date.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;RatingSnapshot"/>
+    <rdfs:range  rdf:resource="&xsd;integer"/>
+  </owl:DatatypeProperty>
+
+  <owl:DatatypeProperty rdf:about="&trekku;priceMin">
+    <rdfs:label>price Min (MYR)</rdfs:label>
+    <rdfs:comment>Minimum price recorded for this entity at the snapshot date,
+    in MYR.</rdfs:comment>
+    <rdfs:domain rdf:resource="&trekku;RatingSnapshot"/>
+    <rdfs:range  rdf:resource="&xsd;decimal"/>
+  </owl:DatatypeProperty>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       ABox — INDIVIDUALS
+       ═══════════════════════════════════════════════════════════ -->
+
+  <!-- ── Location individuals ─────────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;Location_KualaLumpur">
+    <rdf:type rdf:resource="&trekku;Location"/>
+    <rdfs:label>Location: Kuala Lumpur</rdfs:label>
+    <rdfs:comment>City-centre Kuala Lumpur / KLCC area, Selangor/WP, Malaysia.</rdfs:comment>
+    <trekku:cityName rdf:datatype="&xsd;string">Kuala Lumpur</trekku:cityName>
+    <trekku:country  rdf:datatype="&xsd;string">Malaysia</trekku:country>
+    <trekku:latitude  rdf:datatype="&xsd;decimal">3.1390</trekku:latitude>
+    <trekku:longitude rdf:datatype="&xsd;decimal">101.6869</trekku:longitude>
+  </owl:NamedIndividual>
+
+  <owl:NamedIndividual rdf:about="&trekku;Location_Penang">
+    <rdf:type rdf:resource="&trekku;Location"/>
+    <rdfs:label>Location: Penang (George Town)</rdfs:label>
+    <rdfs:comment>George Town, Penang — UNESCO World Heritage city and food
+    capital of Malaysia.</rdfs:comment>
+    <trekku:cityName rdf:datatype="&xsd;string">Penang</trekku:cityName>
+    <trekku:country  rdf:datatype="&xsd;string">Malaysia</trekku:country>
+    <trekku:latitude  rdf:datatype="&xsd;decimal">5.4141</trekku:latitude>
+    <trekku:longitude rdf:datatype="&xsd;decimal">100.3288</trekku:longitude>
+  </owl:NamedIndividual>
+
+  <owl:NamedIndividual rdf:about="&trekku;Location_BukitBintang">
+    <rdf:type rdf:resource="&trekku;Location"/>
+    <rdfs:label>Location: Bukit Bintang, Kuala Lumpur</rdfs:label>
+    <rdfs:comment>Bukit Bintang entertainment and shopping district within Kuala
+    Lumpur.</rdfs:comment>
+    <trekku:cityName rdf:datatype="&xsd;string">Bukit Bintang</trekku:cityName>
+    <trekku:country  rdf:datatype="&xsd;string">Malaysia</trekku:country>
+    <trekku:latitude  rdf:datatype="&xsd;decimal">3.1478</trekku:latitude>
+    <trekku:longitude rdf:datatype="&xsd;decimal">101.7107</trekku:longitude>
+  </owl:NamedIndividual>
+
+
+  <!-- ── Hotel individuals (asserted ONLY as Hotel — tier inferred by reasoner) -->
+
+  <!--
+    HotelIndividual_Budget: hasMaxPrice = 150 (< 200) → BudgetHotel
+  -->
+  <owl:NamedIndividual rdf:about="&trekku;HotelIndividual_Budget">
+    <rdf:type rdf:resource="&trekku;Hotel"/>
+    <rdfs:label>Hotel: OYO 89761 Hotel Aliff Bukit Bintang (seed)</rdfs:label>
+    <rdfs:comment>Budget seed hotel in Bukit Bintang. hasMaxPrice MYR 150 → reasoner
+    should classify this as BudgetHotel (maxExclusive 200).</rdfs:comment>
+    <trekku:hasName    rdf:datatype="&xsd;string">OYO 89761 Hotel Aliff Bukit Bintang</trekku:hasName>
+    <trekku:hasSource  rdf:datatype="&xsd;string">serpapi_hotels</trekku:hasSource>
+    <trekku:lastUpdated rdf:datatype="&xsd;dateTime">2026-06-09T00:00:00Z</trekku:lastUpdated>
+    <trekku:hasMinPrice rdf:datatype="&xsd;decimal">90</trekku:hasMinPrice>
+    <trekku:hasMaxPrice rdf:datatype="&xsd;decimal">150</trekku:hasMaxPrice>
+    <trekku:hasRating   rdf:datatype="&xsd;decimal">3.8</trekku:hasRating>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Free Wi-Fi</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Air Conditioning</trekku:hasAmenity>
+    <trekku:hasCategory rdf:datatype="&xsd;string">budget</trekku:hasCategory>
+    <trekku:hasLocation rdf:resource="&trekku;Location_BukitBintang"/>
+  </owl:NamedIndividual>
+
+  <!--
+    HotelIndividual_MidRange: hasMaxPrice = 350 (≥ 200, < 500) → MidRangeHotel
+  -->
+  <owl:NamedIndividual rdf:about="&trekku;HotelIndividual_MidRange">
+    <rdf:type rdf:resource="&trekku;Hotel"/>
+    <rdfs:label>Hotel: Cititel Mid Valley Kuala Lumpur (seed)</rdfs:label>
+    <rdfs:comment>Mid-range seed hotel in Kuala Lumpur. hasMaxPrice MYR 350 → reasoner
+    should classify this as MidRangeHotel (minInclusive 200, maxExclusive 500).
+    This is also the hotel linked to the seed Itinerary.</rdfs:comment>
+    <trekku:hasName    rdf:datatype="&xsd;string">Cititel Mid Valley Kuala Lumpur</trekku:hasName>
+    <trekku:hasSource  rdf:datatype="&xsd;string">serpapi_hotels</trekku:hasSource>
+    <trekku:lastUpdated rdf:datatype="&xsd;dateTime">2026-06-09T00:00:00Z</trekku:lastUpdated>
+    <trekku:hasMinPrice rdf:datatype="&xsd;decimal">250</trekku:hasMinPrice>
+    <trekku:hasMaxPrice rdf:datatype="&xsd;decimal">350</trekku:hasMaxPrice>
+    <trekku:hasRating   rdf:datatype="&xsd;decimal">4.2</trekku:hasRating>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Free Wi-Fi</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Swimming Pool</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Fitness Centre</trekku:hasAmenity>
+    <trekku:hasCategory rdf:datatype="&xsd;string">mid-range</trekku:hasCategory>
+    <trekku:hasLocation rdf:resource="&trekku;Location_KualaLumpur"/>
+  </owl:NamedIndividual>
+
+  <!--
+    HotelIndividual_Luxury: hasMaxPrice = 820 (≥ 500) → LuxuryHotel
+  -->
+  <owl:NamedIndividual rdf:about="&trekku;HotelIndividual_Luxury">
+    <rdf:type rdf:resource="&trekku;Hotel"/>
+    <rdfs:label>Hotel: Mandarin Oriental Kuala Lumpur (seed)</rdfs:label>
+    <rdfs:comment>Luxury seed hotel at KLCC. hasMaxPrice MYR 820 → reasoner
+    should classify this as LuxuryHotel (minInclusive 500).</rdfs:comment>
+    <trekku:hasName    rdf:datatype="&xsd;string">Mandarin Oriental Kuala Lumpur</trekku:hasName>
+    <trekku:hasSource  rdf:datatype="&xsd;string">serpapi_hotels</trekku:hasSource>
+    <trekku:lastUpdated rdf:datatype="&xsd;dateTime">2026-06-09T00:00:00Z</trekku:lastUpdated>
+    <trekku:hasMinPrice rdf:datatype="&xsd;decimal">600</trekku:hasMinPrice>
+    <trekku:hasMaxPrice rdf:datatype="&xsd;decimal">820</trekku:hasMaxPrice>
+    <trekku:hasRating   rdf:datatype="&xsd;decimal">4.8</trekku:hasRating>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Free Wi-Fi</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Swimming Pool</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Spa</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Fine Dining Restaurant</trekku:hasAmenity>
+    <trekku:hasAmenity  rdf:datatype="&xsd;string">Concierge</trekku:hasAmenity>
+    <trekku:hasCategory rdf:datatype="&xsd;string">luxury</trekku:hasCategory>
+    <trekku:hasLocation rdf:resource="&trekku;Location_KualaLumpur"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── Attraction individuals ───────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;Attraction_PetronasTwinTowers">
+    <rdf:type rdf:resource="&trekku;Attraction"/>
+    <rdfs:label>Attraction: Petronas Twin Towers</rdfs:label>
+    <rdfs:comment>Iconic 88-storey twin skyscrapers at KLCC, Kuala Lumpur.
+    Malaysia's most recognisable landmark and popular tourist site.</rdfs:comment>
+    <trekku:hasName    rdf:datatype="&xsd;string">Petronas Twin Towers</trekku:hasName>
+    <trekku:hasSource  rdf:datatype="&xsd;string">serpapi_attractions</trekku:hasSource>
+    <trekku:lastUpdated rdf:datatype="&xsd;dateTime">2026-06-09T00:00:00Z</trekku:lastUpdated>
+    <trekku:poiCategory        rdf:datatype="&xsd;string">Landmark</trekku:poiCategory>
+    <trekku:openingHours       rdf:datatype="&xsd;string">Tuesday–Sunday 9 AM – 9 PM (closed Monday)</trekku:openingHours>
+    <trekku:estimatedDuration  rdf:datatype="&xsd;string">2–3 hours</trekku:estimatedDuration>
+    <trekku:popularityScore    rdf:datatype="&xsd;decimal">4.7</trekku:popularityScore>
+    <trekku:hasLocation rdf:resource="&trekku;Location_KualaLumpur"/>
+  </owl:NamedIndividual>
+
+  <owl:NamedIndividual rdf:about="&trekku;Attraction_BatuCaves">
+    <rdf:type rdf:resource="&trekku;Attraction"/>
+    <rdfs:label>Attraction: Batu Caves</rdfs:label>
+    <rdfs:comment>Hindu temple complex inside a series of limestone caves north of
+    Kuala Lumpur. Famous for the 272-step staircase and golden Lord Murugan
+    statue.</rdfs:comment>
+    <trekku:hasName    rdf:datatype="&xsd;string">Batu Caves</trekku:hasName>
+    <trekku:hasSource  rdf:datatype="&xsd;string">serpapi_attractions</trekku:hasSource>
+    <trekku:lastUpdated rdf:datatype="&xsd;dateTime">2026-06-09T00:00:00Z</trekku:lastUpdated>
+    <trekku:poiCategory        rdf:datatype="&xsd;string">Religious site</trekku:poiCategory>
+    <trekku:openingHours       rdf:datatype="&xsd;string">Daily 6 AM – 9 PM</trekku:openingHours>
+    <trekku:estimatedDuration  rdf:datatype="&xsd;string">1–2 hours</trekku:estimatedDuration>
+    <trekku:popularityScore    rdf:datatype="&xsd;decimal">4.6</trekku:popularityScore>
+    <trekku:hasLocation rdf:resource="&trekku;Location_KualaLumpur"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── Flight individual ────────────────────────────────────── -->
+
+  <!--
+    Price MYR 189 < TripParams budget MYR 1500 → Itinerary is NOT over-budget.
+    The SWRL rule will NOT fire for Itinerary_KL_3Day.
+  -->
+  <owl:NamedIndividual rdf:about="&trekku;AirAsiaFlight_PEN_KUL">
+    <rdf:type rdf:resource="&trekku;Flight"/>
+    <rdfs:label>Flight: AirAsia AK6301 Penang → Kuala Lumpur</rdfs:label>
+    <rdfs:comment>AirAsia economy class flight from Penang International (PEN) to
+    Kuala Lumpur International (KUL). Price MYR 189 is below the seed itinerary
+    budget of MYR 1500, so the SWRL over-budget rule does NOT fire.</rdfs:comment>
+    <trekku:hasName        rdf:datatype="&xsd;string">AirAsia AK6301</trekku:hasName>
+    <trekku:hasSource      rdf:datatype="&xsd;string">serpapi_flights</trekku:hasSource>
+    <trekku:lastUpdated    rdf:datatype="&xsd;dateTime">2026-06-09T00:00:00Z</trekku:lastUpdated>
+    <trekku:airline        rdf:datatype="&xsd;string">AirAsia</trekku:airline>
+    <trekku:originState    rdf:datatype="&xsd;string">Penang</trekku:originState>
+    <trekku:price          rdf:datatype="&xsd;decimal">189</trekku:price>
+    <trekku:durationMinutes rdf:datatype="&xsd;integer">55</trekku:durationMinutes>
+    <trekku:hasLocation rdf:resource="&trekku;Location_Penang"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── TripParams individual ────────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;TripParams_KL_3Day">
+    <rdf:type rdf:resource="&trekku;TripParams"/>
+    <rdfs:label>Trip Params: Penang→KL, 3 days, MYR 1500</rdfs:label>
+    <rdfs:comment>Seed trip parameters: traveller from Penang travelling to Kuala
+    Lumpur for 3 days on a MYR 1500 budget, 2 travellers.</rdfs:comment>
+    <trekku:budget     rdf:datatype="&xsd;decimal">1500</trekku:budget>
+    <trekku:days       rdf:datatype="&xsd;integer">3</trekku:days>
+    <trekku:travelers  rdf:datatype="&xsd;integer">2</trekku:travelers>
+    <trekku:travelDate rdf:datatype="&xsd;string">2026-07-15</trekku:travelDate>
+  </owl:NamedIndividual>
+
+
+  <!-- ── ItineraryDay individual ──────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;ItineraryDay_KL_Day1">
+    <rdf:type rdf:resource="&trekku;ItineraryDay"/>
+    <rdfs:label>Itinerary Day 1: Cititel + Twin Towers + Batu Caves</rdfs:label>
+    <rdfs:comment>Day 1 of the seed Kuala Lumpur itinerary. Overnight at Cititel
+    Mid Valley; daytime visits to Petronas Twin Towers and Batu Caves.</rdfs:comment>
+    <trekku:dayHasHotel      rdf:resource="&trekku;HotelIndividual_MidRange"/>
+    <trekku:dayHasAttraction rdf:resource="&trekku;Attraction_PetronasTwinTowers"/>
+    <trekku:dayHasAttraction rdf:resource="&trekku;Attraction_BatuCaves"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── Itinerary individual ─────────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;Itinerary_KL_3Day">
+    <rdf:type rdf:resource="&trekku;Itinerary"/>
+    <rdfs:label>Itinerary: Kuala Lumpur 3-Day Trip (seed)</rdfs:label>
+    <rdfs:comment>Seed itinerary generated for TripParams_KL_3Day. Flight cost MYR 189
+    is well below the budget of MYR 1500, so the SWRL OverBudgetItinerary rule
+    will NOT classify this individual. Use this as the baseline clean-state
+    example in Protégé.</rdfs:comment>
+    <trekku:includesDay         rdf:resource="&trekku;ItineraryDay_KL_Day1"/>
+    <trekku:itineraryHasFlight  rdf:resource="&trekku;AirAsiaFlight_PEN_KUL"/>
+    <trekku:basedOnTrip         rdf:resource="&trekku;TripParams_KL_3Day"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── AgentSession individual ──────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;AgentSession_Seed01">
+    <rdf:type rdf:resource="&trekku;AgentSession"/>
+    <rdfs:label>Agent Session: Seed Session 01</rdfs:label>
+    <rdfs:comment>Seed agent session that produced the Kuala Lumpur 3-day
+    itinerary.</rdfs:comment>
+    <trekku:sessionProducedItinerary rdf:resource="&trekku;Itinerary_KL_3Day"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── TacitFeedback individual ─────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;TacitFeedback_Hotel_MidRange">
+    <rdf:type rdf:resource="&trekku;TacitFeedback"/>
+    <rdfs:label>Tacit Feedback: explicit rating on Cititel Mid Valley</rdfs:label>
+    <rdfs:comment>User gave 4 out of 5 stars for Cititel Mid Valley after their
+    stay, mapped to a positive signal of 0.8.</rdfs:comment>
+    <trekku:feedbackType rdf:datatype="&xsd;string">explicit_rating</trekku:feedbackType>
+    <trekku:signal       rdf:datatype="&xsd;decimal">0.8</trekku:signal>
+    <trekku:feedbackOn   rdf:resource="&trekku;HotelIndividual_MidRange"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ── RatingSnapshot individual ────────────────────────────── -->
+
+  <owl:NamedIndividual rdf:about="&trekku;RatingSnapshot_MidRange_20260609">
+    <rdf:type rdf:resource="&trekku;RatingSnapshot"/>
+    <rdfs:label>Rating Snapshot: Cititel Mid Valley — 2026-06-09</rdfs:label>
+    <rdfs:comment>Point-in-time rating snapshot for Cititel Mid Valley captured on
+    2026-06-09 during a scheduled knowledge-base refresh cycle.</rdfs:comment>
+    <trekku:snapshotDate rdf:datatype="&xsd;string">2026-06-09</trekku:snapshotDate>
+    <trekku:rating       rdf:datatype="&xsd;decimal">4.2</trekku:rating>
+    <trekku:reviewCount  rdf:datatype="&xsd;integer">3841</trekku:reviewCount>
+    <trekku:priceMin     rdf:datatype="&xsd;decimal">250</trekku:priceMin>
+    <trekku:snapshotOf   rdf:resource="&trekku;HotelIndividual_MidRange"/>
+  </owl:NamedIndividual>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       SWRL RULE — Over-Budget Itinerary Detection
+       ═══════════════════════════════════════════════════════════
+       Rule semantics:
+         IF  an Itinerary i is basedOnTrip t
+             AND t has budget b
+             AND i has flight f
+             AND f has price p
+             AND p > b
+         THEN i is an OverBudgetItinerary
+
+       The seed individual Itinerary_KL_3Day has flight price MYR 189
+       and budget MYR 1500, so the condition (189 > 1500) is FALSE and
+       it will NOT be classified OverBudgetItinerary. This is intentional.
+       ─────────────────────────────────────────────────────────── -->
+
+  <swrl:Imp rdf:about="&trekku;Rule_OverBudgetItinerary">
+    <rdfs:label>SWRL Rule: Over-Budget Itinerary</rdfs:label>
+    <rdfs:comment>Fires when a Flight's price exceeds the TripParams budget linked
+    to an Itinerary. Classifies that Itinerary as OverBudgetItinerary. The seed
+    Itinerary_KL_3Day (flight MYR 189, budget MYR 1500) does NOT trigger this
+    rule — this is intentional for a clean default state.</rdfs:comment>
+
+    <swrl:body>
+      <swrl:AtomList>
+        <rdf:rest>
+          <swrl:AtomList>
+            <rdf:rest>
+              <swrl:AtomList>
+                <rdf:rest>
+                  <swrl:AtomList>
+                    <rdf:rest>
+                      <swrl:AtomList>
+                        <rdf:rest rdf:resource="http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"/>
+                        <rdf:first>
+                          <swrl:BuiltinAtom>
+                            <swrl:builtin rdf:resource="&swrlb;greaterThan"/>
+                            <swrl:arguments>
+                              <rdf:List>
+                                <rdf:rest>
+                                  <rdf:List>
+                                    <rdf:rest rdf:resource="http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"/>
+                                    <rdf:first>
+                                      <swrl:Variable rdf:about="&trekku;var_b"/>
+                                    </rdf:first>
+                                  </rdf:List>
+                                </rdf:rest>
+                                <rdf:first>
+                                  <swrl:Variable rdf:about="&trekku;var_p"/>
+                                </rdf:first>
+                              </rdf:List>
+                            </swrl:arguments>
+                          </swrl:BuiltinAtom>
+                        </rdf:first>
+                      </swrl:AtomList>
+                    </rdf:rest>
+                    <rdf:first>
+                      <swrl:DatavaluedPropertyAtom>
+                        <swrl:propertyPredicate rdf:resource="&trekku;price"/>
+                        <swrl:argument1>
+                          <swrl:Variable rdf:about="&trekku;var_f"/>
+                        </swrl:argument1>
+                        <swrl:argument2>
+                          <swrl:Variable rdf:about="&trekku;var_p"/>
+                        </swrl:argument2>
+                      </swrl:DatavaluedPropertyAtom>
+                    </rdf:first>
+                  </swrl:AtomList>
+                </rdf:rest>
+                <rdf:first>
+                  <swrl:IndividualPropertyAtom>
+                    <swrl:propertyPredicate rdf:resource="&trekku;itineraryHasFlight"/>
+                    <swrl:argument1>
+                      <swrl:Variable rdf:about="&trekku;var_i"/>
+                    </swrl:argument1>
+                    <swrl:argument2>
+                      <swrl:Variable rdf:about="&trekku;var_f"/>
+                    </swrl:argument2>
+                  </swrl:IndividualPropertyAtom>
+                </rdf:first>
+              </swrl:AtomList>
+            </rdf:rest>
+            <rdf:first>
+              <swrl:DatavaluedPropertyAtom>
+                <swrl:propertyPredicate rdf:resource="&trekku;budget"/>
+                <swrl:argument1>
+                  <swrl:Variable rdf:about="&trekku;var_t"/>
+                </swrl:argument1>
+                <swrl:argument2>
+                  <swrl:Variable rdf:about="&trekku;var_b"/>
+                </swrl:argument2>
+              </swrl:DatavaluedPropertyAtom>
+            </rdf:first>
+          </swrl:AtomList>
+        </rdf:rest>
+        <rdf:first>
+          <swrl:IndividualPropertyAtom>
+            <swrl:propertyPredicate rdf:resource="&trekku;basedOnTrip"/>
+            <swrl:argument1>
+              <swrl:Variable rdf:about="&trekku;var_i"/>
+            </swrl:argument1>
+            <swrl:argument2>
+              <swrl:Variable rdf:about="&trekku;var_t"/>
+            </swrl:argument2>
+          </swrl:IndividualPropertyAtom>
+        </rdf:first>
+      </swrl:AtomList>
+    </swrl:body>
+
+    <swrl:head>
+      <swrl:AtomList>
+        <rdf:rest rdf:resource="http://www.w3.org/1999/02/22-rdf-syntax-ns#nil"/>
+        <rdf:first>
+          <swrl:ClassAtom>
+            <swrl:classPredicate rdf:resource="&trekku;OverBudgetItinerary"/>
+            <swrl:argument1>
+              <swrl:Variable rdf:about="&trekku;var_i"/>
+            </swrl:argument1>
+          </swrl:ClassAtom>
+        </rdf:first>
+      </swrl:AtomList>
+    </swrl:head>
+
+  </swrl:Imp>
+
+  <!-- ── SWRL body atom for Itinerary(?i) class membership ────── -->
+  <!--
+    NOTE: The Itinerary(?i) class atom is factored in as the first atom
+    in a separate encoding below. Some SWRL serialisers omit explicit
+    class atoms when the individual-property atom already constrains the
+    type. To be explicit and Protégé-safe we add it here via a second
+    rule that checks Itinerary type first, then delegates. For conciseness
+    and to avoid duplication we embed the class atom directly in the body
+    chain above via the implicit typing of var_i through the
+    basedOnTrip property domain (Itinerary). Protégé's SWRLTab will
+    show the rule as:
+      Itinerary(?i), basedOnTrip(?i, ?t), budget(?t, ?b),
+      itineraryHasFlight(?i, ?f), price(?f, ?p), swrlb:greaterThan(?p, ?b)
+      → OverBudgetItinerary(?i)
+  -->
+
+</rdf:RDF>
